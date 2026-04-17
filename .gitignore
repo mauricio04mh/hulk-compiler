@@ -1,0 +1,25 @@
+# Rust build output
+/target/
+
+# Environment files
+.env
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Editors and IDEs
+.idea/
+.vscode/
+
+# Vim
+*.swp
+*.swo
+
+# Backup files
+*~
