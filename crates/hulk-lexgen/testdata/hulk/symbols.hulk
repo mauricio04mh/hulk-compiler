@@ -1,0 +1,5 @@
+a == b;
+a := b;
+name @@ lastname;
+value @ other;
+label: value;

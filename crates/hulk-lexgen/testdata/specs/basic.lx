@@ -1,0 +1,17 @@
+keyword let LET
+keyword if IF
+keyword else ELSE
+keyword in IN
+
+symbol ":=" ASSIGN
+symbol "==" EQEQ
+symbol "=" EQ
+symbol "(" LPAREN
+symbol ")" RPAREN
+symbol ";" SEMICOLON
+
+ident IDENT start=letter rest=letter|digit|_
+number NUMBER
+string STRING
+skip whitespace
+skip line_comment "//"
