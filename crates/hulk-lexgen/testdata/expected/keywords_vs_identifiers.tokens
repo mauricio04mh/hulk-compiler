@@ -1,0 +1,8 @@
+LET
+IDENT(iffy)
+EQ
+NUMBER(1)
+IN
+IDENT(letter)
+SEMICOLON
+EOF

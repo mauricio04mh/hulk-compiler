@@ -1,0 +1,11 @@
+symbol "==" EQEQ
+symbol ":=" ASSIGN
+symbol "@@" CONCAT_WS
+symbol "=" EQ
+symbol ":" COLON
+symbol "@" CONCAT
+symbol ";" SEMICOLON
+
+ident IDENT start=letter rest=letter|digit|_
+skip whitespace
+skip line_comment "//"

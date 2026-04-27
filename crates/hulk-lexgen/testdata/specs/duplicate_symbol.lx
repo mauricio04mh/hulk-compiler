@@ -1,0 +1,2 @@
+symbol "=" EQ
+symbol "=" ASSIGN_AGAIN
