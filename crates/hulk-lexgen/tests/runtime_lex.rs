@@ -28,7 +28,11 @@ fn distinguishes_keywords_from_identifiers() {
 
 #[test]
 fn applies_longest_match_for_conflicting_symbols() {
-    let tokens = lex_input("longest_match.lx", "a == b; a := b; name @@ last; value @ other; label: value;").unwrap();
+    let tokens = lex_input(
+        "longest_match.lx",
+        "a == b; a := b; name @@ last; value @ other; label: value;",
+    )
+    .unwrap();
 
     assert_eq!(
         render_tokens(&tokens),
@@ -74,8 +78,7 @@ fn lexes_valid_strings_and_reports_unterminated_ones() {
 
 #[test]
 fn skips_comments_and_whitespace() {
-    let tokens =
-        lex_input("basic.lx", " \tlet x = 1; // comentario\n\n  in letter;\n").unwrap();
+    let tokens = lex_input("basic.lx", " \tlet x = 1; // comentario\n\n  in letter;\n").unwrap();
 
     assert_eq!(
         render_tokens(&tokens),
