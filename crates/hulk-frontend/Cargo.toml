@@ -1,0 +1,10 @@
+[package]
+name = "hulk-frontend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+hulk-lexgen = { path = "../hulk-lexgen" }
+hulk-parsegen = { path = "../hulk-parsegen" }
+thiserror = "2"
