@@ -12,6 +12,12 @@ pub enum CstNode {
         line: usize,
         column: usize,
     },
+    /// Placeholder inserted during error recovery when a sub-tree failed to parse.
+    Error {
+        message: String,
+        line: usize,
+        column: usize,
+    },
 }
 
 impl CstNode {
@@ -29,5 +35,17 @@ impl CstNode {
             line: token.line,
             column: token.column,
         }
+    }
+
+    pub fn error(message: impl Into<String>, line: usize, column: usize) -> Self {
+        Self::Error {
+            message: message.into(),
+            line,
+            column,
+        }
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
     }
 }
