@@ -1,0 +1,9 @@
+[package]
+name = "hulk-sema"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+hulk-frontend = { path = "../hulk-frontend" }
+thiserror = "2"

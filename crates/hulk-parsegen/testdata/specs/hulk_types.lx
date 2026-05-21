@@ -1,0 +1,57 @@
+keyword function FUNCTION
+keyword type TYPE
+keyword inherits INHERITS
+keyword new NEW
+keyword self SELF
+keyword base BASE
+keyword let LET
+keyword in IN
+keyword true TRUE
+keyword false FALSE
+keyword if IF
+keyword elif ELIF
+keyword else ELSE
+keyword while WHILE
+keyword for FOR
+keyword is IS
+keyword as AS
+keyword protocol PROTOCOL
+keyword extends EXTENDS
+
+symbol "@@" ATAT
+symbol "@" AT
+symbol "==" EQ
+symbol "!=" NEQ
+symbol "<=" LE
+symbol "<" LT
+symbol ">=" GE
+symbol ">" GT
+symbol ":=" ASSIGN
+symbol "=>" ARROW
+symbol "->" FUNCARROW
+symbol "=" EQUAL
+symbol ":" COLON
+symbol "," COMMA
+symbol "(" LPAREN
+symbol ")" RPAREN
+symbol "{" LBRACE
+symbol "}" RBRACE
+symbol "[" LBRACKET
+symbol "]" RBRACKET
+symbol ";" SEMICOLON
+symbol "." DOT
+symbol "+" PLUS
+symbol "-" MINUS
+symbol "*" STAR
+symbol "/" SLASH
+symbol "%" MOD
+symbol "^" POW
+symbol "&" AND
+symbol "|" OR
+symbol "!" NOT
+
+ident IDENT start=letter rest=letter|digit|_
+number NUMBER
+string STRING
+skip whitespace
+skip line_comment "//"

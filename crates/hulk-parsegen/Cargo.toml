@@ -1,0 +1,10 @@
+[package]
+name = "hulk-parsegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+hulk-lexgen = { path = "../hulk-lexgen" }

@@ -64,10 +64,14 @@ fn builds_expected_lexer_spec_from_basic_fixture() {
             prefix: "//".to_string(),
         })
     );
-    assert!(spec.exact_rules.iter().any(|rule| {
-        rule.text == "let" && rule.token == "LET" && rule.is_keyword
-    }));
-    assert!(spec.exact_rules.iter().any(|rule| {
-        rule.text == ":=" && rule.token == "ASSIGN" && !rule.is_keyword
-    }));
+    assert!(
+        spec.exact_rules
+            .iter()
+            .any(|rule| { rule.text == "let" && rule.token == "LET" && rule.is_keyword })
+    );
+    assert!(
+        spec.exact_rules
+            .iter()
+            .any(|rule| { rule.text == ":=" && rule.token == "ASSIGN" && !rule.is_keyword })
+    );
 }

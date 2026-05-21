@@ -1,0 +1,16 @@
+keyword let LET
+keyword in IN
+keyword true TRUE
+keyword false FALSE
+
+symbol "=" EQUAL
+symbol "," COMMA
+symbol "(" LPAREN
+symbol ")" RPAREN
+symbol ";" SEMICOLON
+
+ident IDENT start=letter rest=letter|digit|_
+number NUMBER
+string STRING
+skip whitespace
+skip line_comment "//"

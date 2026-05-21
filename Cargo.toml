@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/hulk-lexgen",
+    "crates/hulk-parsegen",
 ]
 resolver = "3"
 

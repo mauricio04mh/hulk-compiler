@@ -1,0 +1,32 @@
+%start Program
+
+Program -> Expr ProgramEnd EOF ;
+
+ProgramEnd -> SEMICOLON ;
+ProgramEnd -> epsilon ;
+
+Expr -> LetExpr ;
+Expr -> Primary ;
+
+LetExpr -> LET LetBinding LetBindingTail IN Expr ;
+
+LetBindingTail -> COMMA LetBinding LetBindingTail ;
+LetBindingTail -> epsilon ;
+
+LetBinding -> IDENT EQUAL Expr ;
+
+Primary -> NUMBER ;
+Primary -> STRING ;
+Primary -> TRUE ;
+Primary -> FALSE ;
+Primary -> IDENT IdentTail ;
+Primary -> LPAREN Expr RPAREN ;
+
+IdentTail -> LPAREN ArgList RPAREN ;
+IdentTail -> epsilon ;
+
+ArgList -> Expr ArgListTail ;
+ArgList -> epsilon ;
+
+ArgListTail -> COMMA Expr ArgListTail ;
+ArgListTail -> epsilon ;
