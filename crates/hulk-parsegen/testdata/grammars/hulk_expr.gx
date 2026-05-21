@@ -1,0 +1,26 @@
+%start Program
+
+Program -> Expr ProgramEnd EOF ;
+
+ProgramEnd -> SEMICOLON ;
+ProgramEnd -> epsilon ;
+
+Expr -> LetExpr ;
+Expr -> OperatorExpr ;
+
+LetExpr -> LET LetBinding LetBindingTail IN Expr ;
+
+LetBindingTail -> COMMA LetBinding LetBindingTail ;
+LetBindingTail -> epsilon ;
+
+LetBinding -> IDENT EQUAL Expr ;
+
+OperatorExpr -> NUMBER ;
+OperatorExpr -> IDENT ;
+OperatorExpr -> STRING ;
+OperatorExpr -> TRUE ;
+OperatorExpr -> FALSE ;
+OperatorExpr -> LPAREN ;
+OperatorExpr -> NOT ;
+OperatorExpr -> MINUS ;
+OperatorExpr -> PLUS ;

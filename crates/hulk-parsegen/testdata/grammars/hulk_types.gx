@@ -1,0 +1,128 @@
+%start Program
+
+Program -> DeclList Expr ProgramEnd EOF ;
+
+DeclList -> Decl DeclList ;
+DeclList -> epsilon ;
+
+Decl -> FunctionDecl ;
+Decl -> TypeDecl ;
+Decl -> ProtocolDecl ;
+
+FunctionDecl -> FUNCTION IDENT LPAREN ParamList RPAREN ReturnType FunctionBody ;
+
+ParamList -> Param ParamListTail ;
+ParamList -> epsilon ;
+
+ParamListTail -> COMMA Param ParamListTail ;
+ParamListTail -> epsilon ;
+
+Param -> IDENT TypeAnnotation ;
+
+TypeAnnotation -> COLON TypeExpr ;
+TypeAnnotation -> epsilon ;
+
+ReturnType -> COLON TypeExpr ;
+ReturnType -> epsilon ;
+
+TypeExpr -> IDENT TypeExprSuffix ;
+TypeExpr -> LPAREN FunctorTypeParams RPAREN FUNCARROW TypeExpr ;
+
+TypeExprSuffix -> STAR ;
+TypeExprSuffix -> LBRACKET RBRACKET ;
+TypeExprSuffix -> epsilon ;
+
+FunctorTypeParams -> TypeExpr FunctorTypeParamsTail ;
+FunctorTypeParams -> epsilon ;
+
+FunctorTypeParamsTail -> COMMA TypeExpr FunctorTypeParamsTail ;
+FunctorTypeParamsTail -> epsilon ;
+
+FunctionBody -> ARROW Expr SEMICOLON ;
+FunctionBody -> BlockExpr ;
+
+TypeDecl -> TYPE IDENT TypeParamList TypeParent LBRACE TypeMemberList RBRACE ;
+
+TypeParamList -> LPAREN ParamList RPAREN ;
+TypeParamList -> epsilon ;
+
+TypeParent -> INHERITS IDENT ParentArgList ;
+TypeParent -> epsilon ;
+
+ParentArgList -> LPAREN ArgList RPAREN ;
+ParentArgList -> epsilon ;
+
+TypeMemberList -> TypeMember TypeMemberList ;
+TypeMemberList -> epsilon ;
+
+TypeMember -> IDENT TypeMemberTail ;
+
+TypeMemberTail -> TypeAnnotation EQUAL Expr SEMICOLON ;
+TypeMemberTail -> LPAREN ParamList RPAREN ReturnType FunctionBody ;
+
+ProtocolDecl -> PROTOCOL IDENT ProtocolParent LBRACE ProtocolMemberList RBRACE ;
+
+ProtocolParent -> EXTENDS IDENT ;
+ProtocolParent -> epsilon ;
+
+ProtocolMemberList -> ProtocolMember ProtocolMemberList ;
+ProtocolMemberList -> epsilon ;
+
+ProtocolMember -> IDENT LPAREN ParamList RPAREN ReturnType SEMICOLON ;
+
+ProgramEnd -> SEMICOLON ;
+ProgramEnd -> epsilon ;
+
+Expr -> IfExpr ;
+Expr -> WhileExpr ;
+Expr -> ForExpr ;
+Expr -> LetExpr ;
+Expr -> BlockExpr ;
+Expr -> OperatorExpr ;
+
+IfExpr -> IF LPAREN Expr RPAREN Expr ElifList ELSE Expr ;
+
+ElifList -> ELIF LPAREN Expr RPAREN Expr ElifList ;
+ElifList -> epsilon ;
+
+WhileExpr -> WHILE LPAREN Expr RPAREN Expr ;
+
+ForExpr -> FOR LPAREN IDENT IN Expr RPAREN Expr ;
+
+LetExpr -> LET LetBinding LetBindingTail IN Expr ;
+
+LetBindingTail -> COMMA LetBinding LetBindingTail ;
+LetBindingTail -> epsilon ;
+
+LetBinding -> IDENT TypeAnnotation EQUAL Expr ;
+
+BlockExpr -> LBRACE ExprList RBRACE ;
+
+ExprList -> Expr ExprListTail ;
+ExprList -> epsilon ;
+
+ExprListTail -> SEMICOLON ExprListTailAfterSemi ;
+ExprListTail -> epsilon ;
+
+ExprListTailAfterSemi -> Expr ExprListTail ;
+ExprListTailAfterSemi -> epsilon ;
+
+ArgList -> Expr ArgListTail ;
+ArgList -> epsilon ;
+
+ArgListTail -> COMMA Expr ArgListTail ;
+ArgListTail -> epsilon ;
+
+OperatorExpr -> NUMBER ;
+OperatorExpr -> IDENT ;
+OperatorExpr -> STRING ;
+OperatorExpr -> TRUE ;
+OperatorExpr -> FALSE ;
+OperatorExpr -> LPAREN ;
+OperatorExpr -> NOT ;
+OperatorExpr -> MINUS ;
+OperatorExpr -> PLUS ;
+OperatorExpr -> NEW ;
+OperatorExpr -> SELF ;
+OperatorExpr -> BASE ;
+OperatorExpr -> LBRACKET ;

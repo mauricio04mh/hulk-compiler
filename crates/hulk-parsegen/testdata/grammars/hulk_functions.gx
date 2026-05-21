@@ -1,0 +1,62 @@
+%start Program
+
+Program -> DeclList Expr ProgramEnd EOF ;
+
+DeclList -> Decl DeclList ;
+DeclList -> epsilon ;
+
+Decl -> FunctionDecl ;
+
+FunctionDecl -> FUNCTION IDENT LPAREN ParamList RPAREN ReturnType FunctionBody ;
+
+ParamList -> Param ParamListTail ;
+ParamList -> epsilon ;
+
+ParamListTail -> COMMA Param ParamListTail ;
+ParamListTail -> epsilon ;
+
+Param -> IDENT TypeAnnotation ;
+
+TypeAnnotation -> COLON IDENT ;
+TypeAnnotation -> epsilon ;
+
+ReturnType -> COLON IDENT ;
+ReturnType -> epsilon ;
+
+FunctionBody -> ARROW Expr SEMICOLON ;
+FunctionBody -> BlockExpr ;
+
+ProgramEnd -> SEMICOLON ;
+ProgramEnd -> epsilon ;
+
+Expr -> LetExpr ;
+Expr -> BlockExpr ;
+Expr -> OperatorExpr ;
+
+LetExpr -> LET LetBinding LetBindingTail IN Expr ;
+
+LetBindingTail -> COMMA LetBinding LetBindingTail ;
+LetBindingTail -> epsilon ;
+
+LetBinding -> IDENT EQUAL Expr ;
+
+BlockExpr -> LBRACE ExprList RBRACE ;
+
+ExprList -> Expr ExprListTail ;
+ExprList -> epsilon ;
+
+ExprListTail -> SEMICOLON ExprListTailAfterSemi ;
+ExprListTail -> epsilon ;
+
+ExprListTailAfterSemi -> Expr ExprListTail ;
+ExprListTailAfterSemi -> epsilon ;
+
+OperatorExpr -> NUMBER ;
+OperatorExpr -> IDENT ;
+OperatorExpr -> STRING ;
+OperatorExpr -> TRUE ;
+OperatorExpr -> FALSE ;
+OperatorExpr -> LPAREN ;
+OperatorExpr -> NOT ;
+OperatorExpr -> MINUS ;
+OperatorExpr -> PLUS ;

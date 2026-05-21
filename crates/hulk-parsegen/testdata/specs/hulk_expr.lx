@@ -1,0 +1,34 @@
+keyword let LET
+keyword in IN
+keyword true TRUE
+keyword false FALSE
+
+symbol "@@" ATAT
+symbol "@" AT
+symbol "==" EQ
+symbol "!=" NEQ
+symbol "<=" LE
+symbol "<" LT
+symbol ">=" GE
+symbol ">" GT
+symbol ":=" ASSIGN
+symbol "=" EQUAL
+symbol "," COMMA
+symbol "(" LPAREN
+symbol ")" RPAREN
+symbol ";" SEMICOLON
+symbol "+" PLUS
+symbol "-" MINUS
+symbol "*" STAR
+symbol "/" SLASH
+symbol "%" MOD
+symbol "^" POW
+symbol "&" AND
+symbol "|" OR
+symbol "!" NOT
+
+ident IDENT start=letter rest=letter|digit|_
+number NUMBER
+string STRING
+skip whitespace
+skip line_comment "//"
