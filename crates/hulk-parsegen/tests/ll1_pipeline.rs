@@ -255,7 +255,8 @@ fn runtime_parser_reports_expected_tokens() {
         ParseToken::new("EOF", "", 1, 2),
     ];
 
-    let err = parser.parse(&tokens).unwrap_err();
+    let errors = parser.parse(&tokens).unwrap_err();
+    let err = errors.first().expect("at least one error");
     assert!(err.expected.contains(&"NUMBER".to_string()));
     assert_eq!(err.found, Some("IDENT".to_string()));
 }

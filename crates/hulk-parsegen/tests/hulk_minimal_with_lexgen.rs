@@ -65,7 +65,7 @@ fn adapt_tokens(lex_tokens: &[LexToken]) -> Vec<ParseToken> {
         .collect()
 }
 
-fn parse_source_with_pipeline(source: &str) -> Result<CstNode, ParseError> {
+fn parse_source_with_pipeline(source: &str) -> Result<CstNode, Vec<ParseError>> {
     let parser = build_runtime_parser();
     let lex_tokens = build_lexer_spec_and_lex(source);
     let parse_tokens = adapt_tokens(&lex_tokens);
@@ -148,14 +148,16 @@ fn integration_parses_false_source() {
 
 #[test]
 fn integration_reports_error_for_invalid_let_source() {
-    let err = parse_source_with_pipeline("let x = in x;").expect_err("parse should fail");
+    let errors = parse_source_with_pipeline("let x = in x;").expect_err("parse should fail");
+    let err = errors.first().expect("at least one error");
     assert_eq!(err.found, Some("IN".to_string()));
     assert!(!err.expected.is_empty());
 }
 
 #[test]
 fn integration_reports_error_for_unfinished_call_source() {
-    let err = parse_source_with_pipeline("print(;").expect_err("parse should fail");
+    let errors = parse_source_with_pipeline("print(;").expect_err("parse should fail");
+    let err = errors.first().expect("at least one error");
     assert_eq!(err.found, Some("SEMICOLON".to_string()));
     assert!(!err.expected.is_empty());
 }

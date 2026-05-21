@@ -157,7 +157,8 @@ fn reports_error_for_missing_expr_in_let_binding() {
         tok("EOF", ""),
     ];
 
-    let err = parser.parse(&tokens).expect_err("parse should fail");
+    let errors = parser.parse(&tokens).expect_err("parse should fail");
+    let err = errors.first().expect("at least one error");
     assert_eq!(err.found, Some("IN".to_string()));
     assert!(!err.expected.is_empty());
 }
@@ -172,7 +173,8 @@ fn reports_error_for_unfinished_call_expression() {
         tok("EOF", ""),
     ];
 
-    let err = parser.parse(&tokens).expect_err("parse should fail");
+    let errors = parser.parse(&tokens).expect_err("parse should fail");
+    let err = errors.first().expect("at least one error");
     assert_eq!(err.found, Some("SEMICOLON".to_string()));
     assert!(!err.expected.is_empty());
 }
