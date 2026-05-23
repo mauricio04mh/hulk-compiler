@@ -2,6 +2,9 @@
 members = [
     "crates/hulk-lexgen",
     "crates/hulk-parsegen",
+    "crates/hulk-frontend",
+    "crates/hulk-sema",
+    "crates/hulk-driver",
 ]
 resolver = "3"
 
