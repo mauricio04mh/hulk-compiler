@@ -56,7 +56,9 @@ pub struct TypeDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeParent {
     pub name: String,
-    pub args: Vec<Expr>,
+    /// `None` means no `(args)` clause → constructor params are passed through from parent.
+    /// `Some(args)` means explicit `(args...)` clause (may be empty).
+    pub args: Option<Vec<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

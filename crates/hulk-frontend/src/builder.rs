@@ -340,9 +340,9 @@ impl AstBuilder {
             .iter()
             .find(|node| matches!(as_node_name(node), Some("ParentArgList")))
         {
-            Self::build_parent_arg_list(parent_arg_list)?
+            Some(Self::build_parent_arg_list(parent_arg_list)?)
         } else {
-            Vec::new()
+            None // no `(...)` clause → passthrough constructor params
         };
 
         Ok(Some(TypeParent {
