@@ -1,0 +1,30 @@
+// Demo: HULK constructs supported by the current parser
+
+// ── Functions ──────────────────────────────────────────────────────────────
+function square(x: Number): Number => x * x;
+
+function max(a: Number, b: Number): Number =>
+    if (a > b) a else b;
+
+// ── Protocols ─────────────────────────────────────────────────────────────
+protocol Printable {
+    toString(): String;
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────
+type Animal(name: String) {
+    name: String = name;
+    speak(): String => "...";
+}
+
+type Dog inherits Animal("dog") {
+    speak(): String => "woof";
+    greet(): String => self.speak();
+}
+
+// ── Entry expression ───────────────────────────────────────────────────────
+let d = new Dog() in
+let result = d.greet() in
+let sq = square(5) in
+let m = max(sq, 10) in
+m;

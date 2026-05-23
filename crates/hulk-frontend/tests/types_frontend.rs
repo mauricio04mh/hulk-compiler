@@ -115,7 +115,7 @@ fn case_d_type_with_inheritance() {
 
     let parent = ty.parent.as_ref().expect("expected parent");
     assert_eq!(parent.name, "Point");
-    assert_eq!(parent.args.len(), 2);
+    assert_eq!(parent.args.as_deref().map(|a| a.len()), Some(2));
 }
 
 #[test]
