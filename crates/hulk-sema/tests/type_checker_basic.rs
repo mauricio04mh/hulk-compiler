@@ -22,6 +22,15 @@ fn check_err(source: &str) -> SemanticError {
         .expect("at least one error")
 }
 
+fn check_err_types(source: &str) -> SemanticError {
+    let program = parse_hulk_types_program(source).expect("source should parse");
+    check_program(&program)
+        .expect_err("type check should fail")
+        .into_iter()
+        .next()
+        .expect("at least one error")
+}
+
 #[test]
 fn case_a_arithmetic() {
     check_ok("1 + 2 * 3;");
@@ -138,4 +147,59 @@ fn builtin_range_takes_two_numbers() {
 #[test]
 fn builtin_constants_are_numbers() {
     check_ok("PI + E;");
+}
+
+#[test]
+fn unannotated_method_parameter_reports_cannot_infer() {
+    let err = check_err_types(
+        "type A {
+            f(x): Number => 1;
+        }
+
+        new A().f(1);",
+    );
+
+    assert!(matches!(
+        err,
+        SemanticError::CannotInferParameterType { function, parameter }
+            if function == "f" && parameter == "x"
+    ));
+}
+
+#[test]
+fn unannotated_type_parameter_reports_cannot_infer() {
+    let err = check_err_types(
+        "type Box(x) {
+            value: Object = x;
+        }
+
+        new Box(1);",
+    );
+
+    assert!(matches!(
+        err,
+        SemanticError::CannotInferParameterType { function, parameter }
+            if function == "Box" && parameter == "x"
+    ));
+}
+
+#[test]
+fn annotated_function_parameter_still_passes() {
+    check_ok("function f(x: Number): Number => x + 1;\n\nf(1);");
+}
+
+#[test]
+fn unannotated_let_still_passes() {
+    check_ok("let x = 42 in x;");
+}
+
+#[test]
+fn annotated_type_parameter_still_passes() {
+    check_ok_types(
+        "type Box(x: Number) {
+            value: Number = x;
+        }
+
+        new Box(1);",
+    );
 }

@@ -3,7 +3,7 @@ use crate::context::TypeRegistry;
 use crate::error::SemanticError;
 use crate::resolver::resolve_program;
 use crate::types::Type;
-use hulk_frontend::ast::{BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Program, TypeDecl, TypeMember, UnaryOp};
+use hulk_frontend::ast::{BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, TypeDecl, TypeMember, UnaryOp};
 use std::collections::HashMap;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -152,20 +152,7 @@ fn register_builtin_functions(env: &mut TypeEnv) {
 fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
     let mut params = Vec::new();
     for param in &func.params {
-        let ty = if let Some(ty_ref) = &param.ty {
-            let ty = Type::from_type_ref(ty_ref);
-            if let Type::UserType(ref name) = ty {
-                env.check_user_type(name);
-            }
-            ty
-        } else {
-            env.record_error(SemanticError::CannotInferParameterType {
-                function: func.name.clone(),
-                parameter: param.name.clone(),
-            });
-            Type::Unknown
-        };
-        params.push(ty);
+        params.push(check_parameter_type(param, &func.name, env));
     }
 
     let ret_ty = if let Some(ret_ref) = &func.return_type {
@@ -179,6 +166,22 @@ fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
     };
 
     env.define_function(func.name.clone(), FunctionType { params, return_type: ret_ty });
+}
+
+fn check_parameter_type(param: &Param, owner: &str, env: &mut TypeEnv) -> Type {
+    if let Some(ty_ref) = &param.ty {
+        let ty = Type::from_type_ref(ty_ref);
+        if let Type::UserType(ref name) = ty {
+            env.check_user_type(name);
+        }
+        ty
+    } else {
+        env.record_error(SemanticError::CannotInferParameterType {
+            function: owner.to_string(),
+            parameter: param.name.clone(),
+        });
+        Type::Unknown
+    }
 }
 
 // ── Pass 2 helper ─────────────────────────────────────────────────────────────
@@ -254,7 +257,7 @@ fn check_type_decl(td: &TypeDecl, env: &mut TypeEnv) {
     // Constructor params are visible in attribute initializers and method bodies.
     env.push_scope();
     for param in &td.params {
-        let ty = param.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Object);
+        let ty = check_parameter_type(param, &td.name, env);
         env.define_var(param.name.clone(), ty);
     }
 
@@ -292,10 +295,7 @@ fn check_method_decl(method: &MethodDecl, env: &mut TypeEnv) {
     env.push_scope();
 
     for param in &method.params {
-        let ty = param.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Object);
-        if let Type::UserType(ref name) = ty {
-            env.check_user_type(name);
-        }
+        let ty = check_parameter_type(param, &method.name, env);
         env.define_var(param.name.clone(), ty);
     }
 
