@@ -1,3 +1,4 @@
+use crate::builtins::{builtin_constants, builtin_functions};
 use crate::error::SemanticError;
 use crate::scope::ScopeStack;
 use crate::symbols::{FunctionSymbol, Symbol, SymbolKind};
@@ -29,29 +30,20 @@ impl Resolver {
     }
 
     fn register_builtins(&mut self) {
-        for (name, arity) in [
-            ("print", 1usize),
-            ("sqrt", 1),
-            ("sin", 1),
-            ("cos", 1),
-            ("exp", 1),
-            ("log", 1),
-            ("rand", 0),
-            ("range", 2),
-        ] {
-            self.builtins.insert(name.to_string(), arity);
+        for signature in builtin_functions() {
+            self.builtins.insert(signature.name.to_string(), signature.params.len());
             self.scopes
                 .define(Symbol {
-                    name: name.to_string(),
+                    name: signature.name.to_string(),
                     kind: SymbolKind::BuiltinFunction,
                 })
                 .expect("builtins should be unique");
         }
 
-        for constant in ["PI", "E"] {
+        for (name, _) in builtin_constants() {
             self.scopes
                 .define(Symbol {
-                    name: constant.to_string(),
+                    name: name.to_string(),
                     kind: SymbolKind::BuiltinConstant,
                 })
                 .expect("builtin constants should be unique");

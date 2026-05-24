@@ -1,3 +1,4 @@
+use crate::builtins::{builtin_constants, builtin_functions};
 use crate::context::TypeRegistry;
 use crate::error::SemanticError;
 use crate::resolver::resolve_program;
@@ -132,34 +133,18 @@ pub fn check_program(program: &Program) -> Result<(), Vec<SemanticError>> {
 // ── Builtins ──────────────────────────────────────────────────────────────────
 
 fn register_builtin_constants(env: &mut TypeEnv) {
-    env.define_var("PI".to_string(), Type::Number);
-    env.define_var("E".to_string(), Type::Number);
+    for (name, ty) in builtin_constants() {
+        env.define_var(name.to_string(), ty);
+    }
 }
 
 fn register_builtin_functions(env: &mut TypeEnv) {
-    let builtins: &[(&str, &[Type], Type)] = &[
-        ("print",  &[Type::Object],                    Type::Object),
-        ("sqrt",   &[Type::Number],                    Type::Number),
-        ("sin",    &[Type::Number],                    Type::Number),
-        ("cos",    &[Type::Number],                    Type::Number),
-        ("exp",    &[Type::Number],                    Type::Number),
-        ("log",    &[Type::Number, Type::Number],      Type::Number),
-        ("rand",   &[],                                Type::Number),
-    ];
-    for (name, params, ret) in builtins {
+    for builtin in builtin_functions() {
         env.define_function(
-            name.to_string(),
-            FunctionType { params: params.to_vec(), return_type: ret.clone() },
+            builtin.name.to_string(),
+            FunctionType { params: builtin.params, return_type: builtin.return_type },
         );
     }
-    // range returns Iterable(Number) so for-loop variables get the right type.
-    env.define_function(
-        "range".to_string(),
-        FunctionType {
-            params: vec![Type::Number, Type::Number],
-            return_type: Type::Iterable(Box::new(Type::Number)),
-        },
-    );
 }
 
 // ── Pass 1 helper ─────────────────────────────────────────────────────────────
@@ -174,6 +159,10 @@ fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
             }
             ty
         } else {
+            env.record_error(SemanticError::CannotInferParameterType {
+                function: func.name.clone(),
+                parameter: param.name.clone(),
+            });
             Type::Unknown
         };
         params.push(ty);

@@ -1,10 +1,15 @@
-use hulk_frontend::parse_hulk_control_program;
+use hulk_frontend::{parse_hulk_control_program, parse_hulk_types_program};
 use hulk_sema::check_program;
 use hulk_sema::error::SemanticError;
 use hulk_sema::types::Type;
 
 fn check_ok(source: &str) {
     let program = parse_hulk_control_program(source).expect("source should parse");
+    check_program(&program).expect("type check should pass");
+}
+
+fn check_ok_types(source: &str) {
+    let program = parse_hulk_types_program(source).expect("source should parse");
     check_program(&program).expect("type check should pass");
 }
 
@@ -106,4 +111,31 @@ fn case_n_while_invalid_condition() {
             found: Type::Number
         }
     );
+}
+
+#[test]
+fn builtin_log_takes_two_numbers() {
+    check_ok("log(100, 10);");
+}
+
+#[test]
+fn builtin_log_rejects_one_argument() {
+    let err = check_err("log(100);");
+    assert!(matches!(err, SemanticError::ArityMismatch { .. }));
+}
+
+#[test]
+fn builtin_log_rejects_string_argument() {
+    let err = check_err("log(\"100\", 10);");
+    assert!(matches!(err, SemanticError::InvalidArgumentType { .. }));
+}
+
+#[test]
+fn builtin_range_takes_two_numbers() {
+    check_ok_types("for (x in range(0, 10)) x + 1;");
+}
+
+#[test]
+fn builtin_constants_are_numbers() {
+    check_ok("PI + E;");
 }
