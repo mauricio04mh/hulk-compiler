@@ -13,6 +13,15 @@ pub enum SemanticError {
     #[error("Duplicate symbol '{name}'")]
     DuplicateSymbol { name: String },
 
+    #[error("Duplicate attribute '{attr_name}' in type '{type_name}'")]
+    DuplicateAttribute { type_name: String, attr_name: String },
+
+    #[error("Duplicate method '{method_name}' in type '{type_name}'")]
+    DuplicateMethod { type_name: String, method_name: String },
+
+    #[error("Duplicate method '{method_name}' in protocol '{protocol_name}'")]
+    DuplicateProtocolMethod { protocol_name: String, method_name: String },
+
     #[error("Undefined variable '{name}'")]
     UndefinedVariable { name: String },
 

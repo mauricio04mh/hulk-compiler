@@ -43,7 +43,7 @@ impl TypeRegistry {
         for decl in &program.declarations {
             match decl {
                 Decl::Type(td) => {
-                    if registry.types.contains_key(&td.name) {
+                    if registry.types.contains_key(&td.name) || registry.protocols.contains_key(&td.name) {
                         return Err(SemanticError::DuplicateType { name: td.name.clone() });
                     }
                     registry.types.insert(
@@ -58,7 +58,7 @@ impl TypeRegistry {
                     );
                 }
                 Decl::Protocol(pd) => {
-                    if registry.protocols.contains_key(&pd.name) {
+                    if registry.protocols.contains_key(&pd.name) || registry.types.contains_key(&pd.name) {
                         return Err(SemanticError::DuplicateType { name: pd.name.clone() });
                     }
                     registry.protocols.insert(
@@ -95,6 +95,12 @@ impl TypeRegistry {
                     for member in &td.members {
                         match member {
                             TypeMember::Attribute(attr) => {
+                                if attributes.contains_key(&attr.name) || methods.contains_key(&attr.name) {
+                                    return Err(SemanticError::DuplicateAttribute {
+                                        type_name: td.name.clone(),
+                                        attr_name: attr.name.clone(),
+                                    });
+                                }
                                 let ty = attr
                                     .ty
                                     .as_ref()
@@ -103,6 +109,12 @@ impl TypeRegistry {
                                 attributes.insert(attr.name.clone(), ty);
                             }
                             TypeMember::Method(method) => {
+                                if methods.contains_key(&method.name) || attributes.contains_key(&method.name) {
+                                    return Err(SemanticError::DuplicateMethod {
+                                        type_name: td.name.clone(),
+                                        method_name: method.name.clone(),
+                                    });
+                                }
                                 let params = method
                                     .params
                                     .iter()
@@ -136,6 +148,12 @@ impl TypeRegistry {
                 Decl::Protocol(pd) => {
                     let mut methods = HashMap::new();
                     for method in &pd.methods {
+                        if methods.contains_key(&method.name) {
+                            return Err(SemanticError::DuplicateProtocolMethod {
+                                protocol_name: pd.name.clone(),
+                                method_name: method.name.clone(),
+                            });
+                        }
                         let params = method
                             .params
                             .iter()
