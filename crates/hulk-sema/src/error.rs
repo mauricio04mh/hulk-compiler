@@ -44,6 +44,9 @@ pub enum SemanticError {
     #[error("Invalid index target: expected vector, found {found:?}")]
     InvalidIndexTarget { found: Type },
 
+    #[error("Invalid iterable target: expected iterable or vector, found {found:?}")]
+    InvalidIterableTarget { found: Type },
+
     #[error("Invalid unary operand for {op:?}: found {found:?}")]
     InvalidUnaryOperand { op: UnaryOp, found: Type },
 

@@ -658,7 +658,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIterableTarget { found: other });
+                    Type::Unknown
+                }
             };
             env.push_scope();
             env.define_var(var.clone(), elem_ty);
@@ -700,7 +703,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIterableTarget { found: other });
+                    Type::Unknown
+                }
             };
             env.push_scope();
             env.define_var(var.clone(), elem_ty);
