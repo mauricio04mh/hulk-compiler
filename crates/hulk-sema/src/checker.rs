@@ -818,34 +818,23 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         Expr::MethodCall { object, method, args, .. } => {
             let obj_ty = infer_expr(object, env);
 
-            let ret_ty: Option<Type> = match &obj_ty {
-                Type::UserType(tname) => {
-                    env.registry
-                        .lookup_method_info(tname, method)
-                        .map(|mi| mi.return_type.clone())
-                }
-                Type::Vector(inner) => match method.as_str() {
-                    "size" => Some(Type::Number),
-                    "current" => Some(*inner.clone()),
-                    _ => None,
-                },
-                Type::Iterable(inner) => match method.as_str() {
-                    "next" => Some(Type::Boolean),
-                    "current" => Some(*inner.clone()),
-                    "size" => Some(Type::Number),
-                    _ => None,
-                },
-                _ => None,
+            if obj_ty == Type::Unknown {
+                for arg in args { infer_expr(arg, env); }
+                return Type::Unknown;
+            }
+
+            let Some((type_name, param_types, return_type)) =
+                method_signature_for_call(&obj_ty, method, env)
+            else {
+                env.record_error(SemanticError::UndefinedMethod {
+                    type_name: method_receiver_type_name(&obj_ty),
+                    method_name: method.clone(),
+                });
+                for arg in args { infer_expr(arg, env); }
+                return Type::Unknown;
             };
 
-            for arg in args {
-                infer_expr(arg, env);
-            }
-
-            match obj_ty {
-                Type::Unknown => Type::Unknown,
-                _ => ret_ty.unwrap_or(Type::Object),
-            }
+            validate_method_call(type_name, method, param_types, return_type, args, env)
         }
 
         Expr::SelfRef => match &env.current_type {
@@ -914,6 +903,81 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
             ret_type
         }
+    }
+}
+
+fn method_signature_for_call(
+    obj_ty: &Type,
+    method: &str,
+    env: &TypeEnv,
+) -> Option<(String, Vec<Type>, Type)> {
+    match obj_ty {
+        Type::UserType(tname) => env
+            .registry
+            .lookup_method_info(tname, method)
+            .map(|mi| (tname.clone(), mi.params, mi.return_type)),
+        Type::Vector(inner) => match method {
+            "size" => Some(("Vector".to_string(), vec![], Type::Number)),
+            "current" => Some(("Vector".to_string(), vec![], *inner.clone())),
+            _ => None,
+        },
+        Type::Iterable(inner) => match method {
+            "next" => Some(("Iterable".to_string(), vec![], Type::Boolean)),
+            "current" => Some(("Iterable".to_string(), vec![], *inner.clone())),
+            "size" => Some(("Iterable".to_string(), vec![], Type::Number)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn validate_method_call(
+    type_name: String,
+    method: &str,
+    param_types: Vec<Type>,
+    return_type: Type,
+    args: &[Expr],
+    env: &mut TypeEnv,
+) -> Type {
+    let function = format!("{type_name}.{method}");
+
+    if param_types.len() != args.len() {
+        env.record_error(SemanticError::ArityMismatch {
+            function,
+            expected: param_types.len(),
+            found: args.len(),
+        });
+        for arg in args { infer_expr(arg, env); }
+        return return_type;
+    }
+
+    for (idx, arg) in args.iter().enumerate() {
+        let found = infer_expr(arg, env);
+        let expected = &param_types[idx];
+        if !is_assignable(&found, expected, &env.registry) {
+            env.record_error(SemanticError::InvalidArgumentType {
+                function: function.clone(),
+                index: idx,
+                expected: expected.clone(),
+                found,
+            });
+        }
+    }
+
+    return_type
+}
+
+fn method_receiver_type_name(ty: &Type) -> String {
+    match ty {
+        Type::Number => "Number".to_string(),
+        Type::String => "String".to_string(),
+        Type::Boolean => "Boolean".to_string(),
+        Type::Object => "Object".to_string(),
+        Type::UserType(name) => name.clone(),
+        Type::Vector(_) => "Vector".to_string(),
+        Type::Iterable(_) => "Iterable".to_string(),
+        Type::Functor { .. } => "Functor".to_string(),
+        Type::Unknown => "Unknown".to_string(),
     }
 }
 

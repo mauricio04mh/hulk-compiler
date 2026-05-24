@@ -19,6 +19,9 @@ pub enum SemanticError {
     #[error("Undefined function '{name}'")]
     UndefinedFunction { name: String },
 
+    #[error("Undefined method '{method_name}' for type '{type_name}'")]
+    UndefinedMethod { type_name: String, method_name: String },
+
     #[error("Invalid assignment target")]
     InvalidAssignmentTarget,
 
