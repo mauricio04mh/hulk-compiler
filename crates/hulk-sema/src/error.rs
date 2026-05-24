@@ -41,6 +41,9 @@ pub enum SemanticError {
     #[error("Type mismatch: expected {expected:?}, found {found:?}")]
     TypeMismatch { expected: Type, found: Type },
 
+    #[error("Invalid index target: expected vector, found {found:?}")]
+    InvalidIndexTarget { found: Type },
+
     #[error("Invalid unary operand for {op:?}: found {found:?}")]
     InvalidUnaryOperand { op: UnaryOp, found: Type },
 

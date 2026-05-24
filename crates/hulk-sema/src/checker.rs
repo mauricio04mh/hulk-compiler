@@ -721,7 +721,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             match vec_ty {
                 Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIndexTarget { found: other });
+                    Type::Unknown
+                }
             }
         }
 
