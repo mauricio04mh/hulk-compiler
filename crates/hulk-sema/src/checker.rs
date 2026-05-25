@@ -1,9 +1,12 @@
+use crate::analysis::analyze_program;
 use crate::builtins::{builtin_constants, builtin_functions};
 use crate::context::TypeRegistry;
 use crate::error::SemanticError;
 use crate::resolver::resolve_program;
 use crate::types::Type;
-use hulk_frontend::ast::{BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, TypeDecl, TypeMember, UnaryOp};
+use hulk_frontend::ast::{
+    BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, TypeDecl, TypeMember, UnaryOp,
+};
 use std::collections::HashMap;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -54,7 +57,10 @@ impl TypeEnv {
     }
 
     fn define_var(&mut self, name: String, ty: Type) {
-        self.scopes.last_mut().expect("at least one scope").insert(name, ty);
+        self.scopes
+            .last_mut()
+            .expect("at least one scope")
+            .insert(name, ty);
     }
 
     fn resolve_var(&self, name: &str) -> Option<Type> {
@@ -94,6 +100,11 @@ impl TypeEnv {
 /// Type-checks a program.  Returns `Ok(())` when there are no errors, or
 /// `Err(errors)` with every error found (not just the first).
 pub fn check_program(program: &Program) -> Result<(), Vec<SemanticError>> {
+    analyze_program(program).map(|_| ())
+}
+
+#[allow(dead_code)]
+fn check_program_legacy(program: &Program) -> Result<(), Vec<SemanticError>> {
     resolve_program(program).map_err(|e| vec![e])?;
 
     let registry = TypeRegistry::build(program).map_err(|e| vec![e])?;
@@ -127,7 +138,11 @@ pub fn check_program(program: &Program) -> Result<(), Vec<SemanticError>> {
     infer_expr(&program.entry, &mut env);
 
     let errors = env.take_errors();
-    if errors.is_empty() { Ok(()) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 // ── Builtins ──────────────────────────────────────────────────────────────────
@@ -142,7 +157,10 @@ fn register_builtin_functions(env: &mut TypeEnv) {
     for builtin in builtin_functions() {
         env.define_function(
             builtin.name.to_string(),
-            FunctionType { params: builtin.params, return_type: builtin.return_type },
+            FunctionType {
+                params: builtin.params,
+                return_type: builtin.return_type,
+            },
         );
     }
 }
@@ -165,7 +183,13 @@ fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
         Type::Unknown
     };
 
-    env.define_function(func.name.clone(), FunctionType { params, return_type: ret_ty });
+    env.define_function(
+        func.name.clone(),
+        FunctionType {
+            params,
+            return_type: ret_ty,
+        },
+    );
 }
 
 fn check_parameter_type(param: &Param, owner: &str, env: &mut TypeEnv) -> Type {
@@ -330,62 +354,82 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
     match expr {
         Expr::Number(_) => Type::Number,
         Expr::String(_) => Type::String,
-        Expr::Bool(_)   => Type::Boolean,
+        Expr::Bool(_) => Type::Boolean,
 
-        Expr::Var(name, _) => {
-            match env.resolve_var(name) {
-                Some(ty) => ty,
-                None => {
-                    env.record_error(SemanticError::UndefinedVariable { name: name.clone() });
-                    Type::Unknown
-                }
+        Expr::Var(name, _) => match env.resolve_var(name) {
+            Some(ty) => ty,
+            None => {
+                env.record_error(SemanticError::UndefinedVariable { name: name.clone() });
+                Type::Unknown
             }
-        }
+        },
 
         Expr::Unary { op, expr, .. } => {
             let found = infer_expr(expr, env);
-            if found == Type::Unknown { return Type::Unknown; }
+            if found == Type::Unknown {
+                return Type::Unknown;
+            }
             match op {
                 UnaryOp::Not => {
-                    if found == Type::Boolean { Type::Boolean }
-                    else {
-                        env.record_error(SemanticError::InvalidUnaryOperand { op: op.clone(), found });
+                    if found == Type::Boolean {
+                        Type::Boolean
+                    } else {
+                        env.record_error(SemanticError::InvalidUnaryOperand {
+                            op: op.clone(),
+                            found,
+                        });
                         Type::Unknown
                     }
                 }
                 UnaryOp::Neg | UnaryOp::Pos => {
-                    if found == Type::Number { Type::Number }
-                    else {
-                        env.record_error(SemanticError::InvalidUnaryOperand { op: op.clone(), found });
+                    if found == Type::Number {
+                        Type::Number
+                    } else {
+                        env.record_error(SemanticError::InvalidUnaryOperand {
+                            op: op.clone(),
+                            found,
+                        });
                         Type::Unknown
                     }
                 }
             }
         }
 
-        Expr::Binary { left, op, right, .. } => {
-            let left_ty  = infer_expr(left, env);
+        Expr::Binary {
+            left, op, right, ..
+        } => {
+            let left_ty = infer_expr(left, env);
             let right_ty = infer_expr(right, env);
 
             // Propagate Unknown silently — an error was already recorded upstream.
             if left_ty == Type::Unknown || right_ty == Type::Unknown {
                 return match op {
-                    BinaryOp::Eq | BinaryOp::Neq
-                    | BinaryOp::Lt | BinaryOp::Le
-                    | BinaryOp::Gt | BinaryOp::Ge
-                    | BinaryOp::And | BinaryOp::Or => Type::Boolean,
+                    BinaryOp::Eq
+                    | BinaryOp::Neq
+                    | BinaryOp::Lt
+                    | BinaryOp::Le
+                    | BinaryOp::Gt
+                    | BinaryOp::Ge
+                    | BinaryOp::And
+                    | BinaryOp::Or => Type::Boolean,
                     _ => Type::Unknown,
                 };
             }
 
             match op {
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul
-                | BinaryOp::Div | BinaryOp::Mod | BinaryOp::Pow => {
+                BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Mod
+                | BinaryOp::Pow => {
                     if left_ty == Type::Number && right_ty == Type::Number {
                         Type::Number
                     } else {
                         env.record_error(SemanticError::InvalidBinaryOperands {
-                            op: op.clone(), left: left_ty, right: right_ty,
+                            op: op.clone(),
+                            left: left_ty,
+                            right: right_ty,
                         });
                         Type::Unknown
                     }
@@ -395,7 +439,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                         Type::String
                     } else {
                         env.record_error(SemanticError::InvalidBinaryOperands {
-                            op: op.clone(), left: left_ty, right: right_ty,
+                            op: op.clone(),
+                            left: left_ty,
+                            right: right_ty,
                         });
                         Type::Unknown
                     }
@@ -406,7 +452,8 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                         || is_assignable(&right_ty, &left_ty, &env.registry);
                     if !compatible {
                         env.record_error(SemanticError::TypeMismatch {
-                            expected: left_ty, found: right_ty,
+                            expected: left_ty,
+                            found: right_ty,
                         });
                     }
                     Type::Boolean
@@ -416,7 +463,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                         Type::Boolean
                     } else {
                         env.record_error(SemanticError::InvalidBinaryOperands {
-                            op: op.clone(), left: left_ty, right: right_ty,
+                            op: op.clone(),
+                            left: left_ty,
+                            right: right_ty,
                         });
                         Type::Boolean
                     }
@@ -426,7 +475,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                         Type::Boolean
                     } else {
                         env.record_error(SemanticError::InvalidBinaryOperands {
-                            op: op.clone(), left: left_ty, right: right_ty,
+                            op: op.clone(),
+                            left: left_ty,
+                            right: right_ty,
                         });
                         Type::Boolean
                     }
@@ -482,10 +533,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                         {
                             let proto_name = proto_name.clone();
                             let concrete_name = concrete_name.clone();
-                            if !env.registry.implicitly_conforms_to_protocol(
-                                &concrete_name,
-                                &proto_name,
-                            ) {
+                            if !env
+                                .registry
+                                .implicitly_conforms_to_protocol(&concrete_name, &proto_name)
+                            {
                                 // Find first missing method for a precise error.
                                 let method_names: Vec<String> = env
                                     .registry
@@ -494,7 +545,8 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                                     .unwrap_or_default();
                                 let mut missing = proto_name.clone();
                                 for m in &method_names {
-                                    if env.registry.lookup_method_info(&concrete_name, m).is_none() {
+                                    if env.registry.lookup_method_info(&concrete_name, m).is_none()
+                                    {
                                         missing = m.clone();
                                         break;
                                     }
@@ -544,12 +596,16 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                             expected: param_types.len(),
                             found: args.len(),
                         });
-                        for arg in args { infer_expr(arg, env); }
+                        for arg in args {
+                            infer_expr(arg, env);
+                        }
                         return ret;
                     }
                     for (idx, arg) in args.iter().enumerate() {
                         let found = infer_expr(arg, env);
-                        if name == "print" { continue; }
+                        if name == "print" {
+                            continue;
+                        }
                         let ok = is_assignable(&found, &param_types[idx], &env.registry);
                         if !ok {
                             env.record_error(SemanticError::InvalidArgumentType {
@@ -572,7 +628,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                                 expected: params.len(),
                                 found: args.len(),
                             });
-                            for arg in args { infer_expr(arg, env); }
+                            for arg in args {
+                                infer_expr(arg, env);
+                            }
                             return *ret;
                         }
                         for (idx, arg) in args.iter().enumerate() {
@@ -592,13 +650,17 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 }
 
                 env.record_error(SemanticError::UndefinedFunction { name: name.clone() });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             }
 
             // Arbitrary callee expression (e.g., higher-order result).
             let callee_ty = infer_expr(callee, env);
-            for arg in args { infer_expr(arg, env); }
+            for arg in args {
+                infer_expr(arg, env);
+            }
             match callee_ty {
                 Type::Functor { ret, .. } => *ret,
                 _ => Type::Object,
@@ -615,7 +677,11 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             ty
         }
 
-        Expr::If { branches, else_branch, .. } => {
+        Expr::If {
+            branches,
+            else_branch,
+            ..
+        } => {
             let mut unified = Type::Unknown;
             for (cond, body) in branches {
                 let cond_ty = infer_expr(cond, env);
@@ -645,7 +711,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             unify_types(&unified, &else_ty, &env.registry)
         }
 
-        Expr::While { condition, body, .. } => {
+        Expr::While {
+            condition, body, ..
+        } => {
             let cond_ty = infer_expr(condition, env);
             if cond_ty != Type::Boolean && cond_ty != Type::Unknown {
                 env.record_error(SemanticError::InvalidConditionType { found: cond_ty });
@@ -653,7 +721,12 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             infer_expr(body, env)
         }
 
-        Expr::For { iterable, body, var, .. } => {
+        Expr::For {
+            iterable,
+            body,
+            var,
+            ..
+        } => {
             let iter_ty = infer_expr(iterable, env);
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
@@ -670,13 +743,17 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             body_ty
         }
 
-        Expr::TypeTest { expr, type_name, .. } => {
+        Expr::TypeTest {
+            expr, type_name, ..
+        } => {
             infer_expr(expr, env);
             env.check_user_type(type_name);
             Type::Boolean
         }
 
-        Expr::TypeCast { expr, type_name, .. } => {
+        Expr::TypeCast {
+            expr, type_name, ..
+        } => {
             infer_expr(expr, env);
             if env.check_user_type(type_name) {
                 Type::UserType(type_name.clone())
@@ -698,7 +775,12 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             Type::Vector(Box::new(elem_ty.unwrap_or(Type::Object)))
         }
 
-        Expr::VectorGenerator { body, var, iterable, .. } => {
+        Expr::VectorGenerator {
+            body,
+            var,
+            iterable,
+            ..
+        } => {
             let iter_ty = infer_expr(iterable, env);
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
@@ -734,11 +816,20 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
         }
 
-        Expr::Lambda { params, body, return_type, .. } => {
+        Expr::Lambda {
+            params,
+            body,
+            return_type,
+            ..
+        } => {
             env.push_scope();
             let mut param_types = Vec::new();
             for param in params {
-                let ty = param.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Object);
+                let ty = param
+                    .ty
+                    .as_ref()
+                    .map(Type::from_type_ref)
+                    .unwrap_or(Type::Object);
                 param_types.push(ty.clone());
                 env.define_var(param.name.clone(), ty);
             }
@@ -751,15 +842,24 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 body_ty
             };
 
-            Type::Functor { params: param_types, ret: Box::new(ret_ty) }
+            Type::Functor {
+                params: param_types,
+                ret: Box::new(ret_ty),
+            }
         }
 
-        Expr::New { type_name, args, .. } => {
+        Expr::New {
+            type_name, args, ..
+        } => {
             let ctor_params: Vec<(String, Type)> = match env.registry.get_type(type_name) {
                 Some(ti) => ti.constructor_params.clone(),
                 None => {
-                    env.record_error(SemanticError::UndefinedType { name: type_name.clone() });
-                    for arg in args { infer_expr(arg, env); }
+                    env.record_error(SemanticError::UndefinedType {
+                        name: type_name.clone(),
+                    });
+                    for arg in args {
+                        infer_expr(arg, env);
+                    }
                     return Type::Unknown;
                 }
             };
@@ -770,7 +870,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                     expected: ctor_params.len(),
                     found: args.len(),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::UserType(type_name.clone());
             }
 
@@ -801,7 +903,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
             if is_self {
                 // self.attr — look only in the current type's OWN attributes (not inherited).
-                let Type::UserType(ref tname) = obj_ty else { return Type::Object; };
+                let Type::UserType(ref tname) = obj_ty else {
+                    return Type::Object;
+                };
                 let tname = tname.clone();
                 if let Some(ti) = env.registry.get_type(&tname) {
                     if let Some(ty) = ti.attributes.get(member.as_str()) {
@@ -815,7 +919,11 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 Type::Unknown
             } else {
                 // Any external attribute access is forbidden.
-                let type_name = if let Type::UserType(ref n) = obj_ty { n.clone() } else { String::new() };
+                let type_name = if let Type::UserType(ref n) = obj_ty {
+                    n.clone()
+                } else {
+                    String::new()
+                };
                 env.record_error(SemanticError::AttributeIsPrivate {
                     type_name,
                     attr_name: member.clone(),
@@ -824,11 +932,18 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
         }
 
-        Expr::MethodCall { object, method, args, .. } => {
+        Expr::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } => {
             let obj_ty = infer_expr(object, env);
 
             if obj_ty == Type::Unknown {
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             }
 
@@ -839,7 +954,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                     type_name: method_receiver_type_name(&obj_ty),
                     method_name: method.clone(),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             };
 
@@ -866,14 +983,18 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: "base() can only be called inside a method body".to_string(),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             };
             let Some(pname) = parent_name else {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: "Cannot use 'base' in a type without a parent".to_string(),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             };
 
@@ -883,7 +1004,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: format!("Parent type '{pname}' has no method '{method_name}'"),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return Type::Unknown;
             };
             let param_types = mi.params.clone();
@@ -895,7 +1018,9 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                     expected: param_types.len(),
                     found: args.len(),
                 });
-                for arg in args { infer_expr(arg, env); }
+                for arg in args {
+                    infer_expr(arg, env);
+                }
                 return ret_type;
             }
             for (idx, arg) in args.iter().enumerate() {
@@ -956,7 +1081,9 @@ fn validate_method_call(
             expected: param_types.len(),
             found: args.len(),
         });
-        for arg in args { infer_expr(arg, env); }
+        for arg in args {
+            infer_expr(arg, env);
+        }
         return return_type;
     }
 
@@ -995,8 +1122,12 @@ fn method_receiver_type_name(ty: &Type) -> String {
 /// Registry-aware assignability check.
 /// `Unknown` on either side is treated as compatible to avoid cascading errors.
 fn is_assignable(sub: &Type, target: &Type, registry: &TypeRegistry) -> bool {
-    if *sub == Type::Unknown || *target == Type::Unknown { return true; }
-    if sub == target || *target == Type::Object { return true; }
+    if *sub == Type::Unknown || *target == Type::Unknown {
+        return true;
+    }
+    if sub == target || *target == Type::Object {
+        return true;
+    }
     match (sub, target) {
         (Type::UserType(sn), Type::UserType(tn)) => registry.is_descendant_of(sn, tn),
         (Type::UserType(_), Type::Object) => true,
@@ -1011,11 +1142,21 @@ fn is_assignable(sub: &Type, target: &Type, registry: &TypeRegistry) -> bool {
 /// Compute the join (least upper bound) of two types.
 /// Used to unify the types of all branches of an `if` expression.
 fn unify_types(a: &Type, b: &Type, registry: &TypeRegistry) -> Type {
-    if *a == Type::Unknown { return b.clone(); }
-    if *b == Type::Unknown { return a.clone(); }
-    if a == b { return a.clone(); }
-    if is_assignable(a, b, registry) { return b.clone(); } // a <: b  →  b is wider
-    if is_assignable(b, a, registry) { return a.clone(); } // b <: a  →  a is wider
+    if *a == Type::Unknown {
+        return b.clone();
+    }
+    if *b == Type::Unknown {
+        return a.clone();
+    }
+    if a == b {
+        return a.clone();
+    }
+    if is_assignable(a, b, registry) {
+        return b.clone();
+    } // a <: b  →  b is wider
+    if is_assignable(b, a, registry) {
+        return a.clone();
+    } // b <: a  →  a is wider
     match (a, b) {
         (Type::UserType(an), Type::UserType(bn)) => registry.least_common_ancestor(an, bn),
         _ => Type::Object,
@@ -1025,15 +1166,26 @@ fn unify_types(a: &Type, b: &Type, registry: &TypeRegistry) -> Type {
 /// Returns true if two branch types can be unified without a type error.
 /// UserType pairs are always compatible (unified via LCA); primitive mismatches are not.
 fn are_branch_types_compatible(a: &Type, b: &Type, registry: &TypeRegistry) -> bool {
-    if *a == Type::Unknown || *b == Type::Unknown { return true; }
-    if a == b || *a == Type::Object || *b == Type::Object { return true; }
-    if is_assignable(a, b, registry) || is_assignable(b, a, registry) { return true; }
+    if *a == Type::Unknown || *b == Type::Unknown {
+        return true;
+    }
+    if a == b || *a == Type::Object || *b == Type::Object {
+        return true;
+    }
+    if is_assignable(a, b, registry) || is_assignable(b, a, registry) {
+        return true;
+    }
     matches!((a, b), (Type::UserType(_), Type::UserType(_)))
 }
 
 fn is_concat_compatible(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Number | Type::String | Type::Boolean | Type::Object | Type::UserType(_) | Type::Unknown
+        Type::Number
+            | Type::String
+            | Type::Boolean
+            | Type::Object
+            | Type::UserType(_)
+            | Type::Unknown
     )
 }
