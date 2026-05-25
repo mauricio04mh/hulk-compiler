@@ -1,0 +1,7 @@
+[package]
+name = "hulk-ir"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
