@@ -1,0 +1,20 @@
+.TYPES
+  <empty>
+
+.DATA
+data @s0 = "same"
+data @s1 = "same"
+data @s2 = "same"
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  temp %t0: Object
+  temp %t1: Object
+  temp %t2: Object
+
+  %t0 = call print(@s0)
+  %t1 = call print(@s1)
+  %t2 = call print(@s2)
+  return %t2
+}

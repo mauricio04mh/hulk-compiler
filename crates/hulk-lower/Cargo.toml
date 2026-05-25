@@ -1,0 +1,11 @@
+[package]
+name = "hulk-lower"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+hulk-frontend = { path = "../hulk-frontend" }
+hulk-ir = { path = "../hulk-ir" }
+hulk-sema = { path = "../hulk-sema" }
+thiserror = "2"

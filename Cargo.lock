@@ -7,6 +7,7 @@ name = "hulk-driver"
 version = "0.1.0"
 dependencies = [
  "hulk-frontend",
+ "hulk-lower",
  "hulk-sema",
 ]
 
@@ -26,6 +27,16 @@ version = "0.1.0"
 [[package]]
 name = "hulk-lexgen"
 version = "0.1.0"
+
+[[package]]
+name = "hulk-lower"
+version = "0.1.0"
+dependencies = [
+ "hulk-frontend",
+ "hulk-ir",
+ "hulk-sema",
+ "thiserror",
+]
 
 [[package]]
 name = "hulk-parsegen"

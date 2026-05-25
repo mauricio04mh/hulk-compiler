@@ -1,0 +1,43 @@
+.TYPES
+type A #0 {
+  method #0 f : A_f
+}
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  local %l0: Object name=x
+  temp %t0: A
+  temp %t1: Number
+  temp %t2: Boolean
+  temp %t3: A
+  temp %t4: Number
+
+  %t0 = allocate A
+  %t0 = static_call A_init(%t0)
+  %l0 = %t0
+  %t2 = type_test %l0 is A
+  branch %t2 ? L1 : L2
+  label L1
+  %t3 = type_cast %l0 as A
+  %t4 = vcall %t3.A::f#0(%t3)
+  %t1 = %t4
+  jump L0
+  label L2
+  %t1 = 0
+  label L0
+  return %t1
+}
+function A_init #1 -> A {
+  param %p0: A name=self
+
+  return %p0
+}
+method A.f #2 -> Number {
+  param %p0: A name=self
+
+  return 1
+}

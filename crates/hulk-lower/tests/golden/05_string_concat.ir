@@ -1,0 +1,15 @@
+.TYPES
+  <empty>
+
+.DATA
+data @s0 = "a"
+data @s1 = "b"
+
+.CODE
+entry #0
+function entry #0 -> String {
+  temp %t0: String
+
+  %t0 = @s0 @ @s1
+  return %t0
+}

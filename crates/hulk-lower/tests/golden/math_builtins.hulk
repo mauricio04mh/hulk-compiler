@@ -1,0 +1,8 @@
+{
+    print(sqrt(9));
+    print(sin(PI));
+    print(cos(0));
+    print(log(2, 8));
+    print(exp(1));
+    print(E);
+}

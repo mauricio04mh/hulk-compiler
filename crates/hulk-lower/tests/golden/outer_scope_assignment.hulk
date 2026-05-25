@@ -1,0 +1,6 @@
+let x = 0 in {
+    let y = 10 in {
+        x := y + 1;
+    };
+    print(x);
+}

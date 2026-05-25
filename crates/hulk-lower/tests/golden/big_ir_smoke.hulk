@@ -1,0 +1,73 @@
+function square(x: Number): Number => x * x;
+
+function max2(a: Number, b: Number): Number =>
+    if (a > b) a else b;
+
+function sum_to(n: Number): Number =>
+    let i: Number = 0, total: Number = 0 in {
+        while (i < n) {
+            i := i + 1;
+            total := total + i;
+        };
+        total;
+    };
+
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+
+    getY(): Number => self.y;
+
+    move(dx: Number, dy: Number): Point {
+        self.x := self.x + dx;
+        self.y := self.y + dy;
+        self;
+    }
+
+    norm(): Number => sqrt(square(self.x) + square(self.y));
+}
+
+type ColoredPoint(x: Number, y: Number, color: String) inherits Point(x, y) {
+    color: String = color;
+
+    getColor(): String => self.color;
+
+    move(dx: Number, dy: Number): Point {
+        base(dx, dy);
+        self;
+    }
+}
+
+let p: Point = new Point(3, 4),
+    cp: ColoredPoint = new ColoredPoint(1, 2, "red"),
+    numbers: Number[] = [1, 2, 3, 4],
+    i: Number = 0,
+    total: Number = 0
+in {
+    print("big-ir-smoke");
+
+    p.move(10, 20);
+    cp.move(5, 6);
+
+    print(p.getX());
+    print(cp.getColor());
+
+    total := sum_to(5);
+
+    if (max2(total, p.getY()) > 10)
+        print("large")
+    else
+        print("small");
+
+    while (i < numbers.size()) {
+        total := total + numbers[i];
+        i := i + 1;
+    };
+
+    print(total);
+    print("done");
+
+    total;
+}

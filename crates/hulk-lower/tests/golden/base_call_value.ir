@@ -1,0 +1,73 @@
+.TYPES
+type Point #0 {
+  attr #0 x: Number
+  attr #1 y: Number
+  method #0 move : Point_move
+}
+type ChildPoint #1 inherits Point {
+  attr #0 x: Number
+  attr #1 y: Number
+  method #0 move : ChildPoint_move
+}
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Point {
+  local %l0: ChildPoint name=p
+  temp %t0: ChildPoint
+  temp %t1: Point
+
+  %t0 = allocate ChildPoint
+  %t0 = static_call ChildPoint_init(%t0, 1, 2)
+  %l0 = %t0
+  %t1 = vcall %l0.ChildPoint::move#0(%l0, 3, 4)
+  return %t1
+}
+function Point_init #1 -> Point {
+  param %p0: Point name=self
+  param %p1: Number name=x
+  param %p2: Number name=y
+
+  setattr %p0, #0, %p1
+  setattr %p0, #1, %p2
+  return %p0
+}
+method Point.move #2 -> Point {
+  param %p0: Point name=self
+  param %p1: Number name=dx
+  param %p2: Number name=dy
+  temp %t0: Number
+  temp %t1: Number
+  temp %t2: Number
+  temp %t3: Number
+
+  %t0 = getattr %p0, #0
+  %t1 = %t0 + %p1
+  setattr %p0, #0, %t1
+  %t2 = getattr %p0, #1
+  %t3 = %t2 + %p2
+  setattr %p0, #1, %t3
+  return %p0
+}
+function ChildPoint_init #3 -> ChildPoint {
+  param %p0: ChildPoint name=self
+  param %p1: Number name=x
+  param %p2: Number name=y
+
+  static_call Point_init(%p0, %p1, %p2)
+  return %p0
+}
+method ChildPoint.move #4 -> Point {
+  param %p0: ChildPoint name=self
+  param %p1: Number name=dx
+  param %p2: Number name=dy
+  local %l0: Point name=r
+  temp %t0: Point
+
+  %t0 = base_call Point::move(%p0, %p1, %p2)
+  %l0 = %t0
+  return %l0
+}

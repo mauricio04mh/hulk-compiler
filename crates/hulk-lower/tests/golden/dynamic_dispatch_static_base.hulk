@@ -1,0 +1,26 @@
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    move(dx: Number, dy: Number): Point {
+        self.x := self.x + dx;
+        self.y := self.y + dy;
+        self;
+    }
+
+    getX(): Number => self.x;
+}
+
+type ColoredPoint(x: Number, y: Number, color: String) inherits Point(x, y) {
+    color: String = color;
+
+    move(dx: Number, dy: Number): Point {
+        base(dx, dy);
+        self;
+    }
+}
+
+let p: Point = new ColoredPoint(1, 2, "red") in {
+    p.move(3, 4);
+    print(p.getX());
+}

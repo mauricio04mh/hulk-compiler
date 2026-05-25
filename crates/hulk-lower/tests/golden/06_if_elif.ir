@@ -1,0 +1,25 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  temp %t0: Number
+
+  branch false ? L1 : L2
+  label L1
+  %t0 = 1
+  jump L0
+  label L2
+  branch true ? L3 : L4
+  label L3
+  %t0 = 2
+  jump L0
+  label L4
+  %t0 = 3
+  label L0
+  return %t0
+}

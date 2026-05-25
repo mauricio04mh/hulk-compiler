@@ -1,0 +1,32 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  local %l0: Number[] name=_iter$2
+  local %l1: Number name=x
+  temp %t0: Number[]
+  temp %t1: Number
+  temp %t2: Boolean
+  temp %t3: Number
+  temp %t4: Number
+
+  %t0 = vector [1, 2, 3]
+  %l0 = %t0
+  %t1 = unit
+  label L0
+  %t2 = vcall %l0.Vector::next#0(%l0)
+  branch %t2 ? L1 : L2
+  label L1
+  %t3 = vcall %l0.Vector::current#0(%l0)
+  %l1 = %t3
+  %t4 = %l1 + 1
+  %t1 = %t4
+  jump L0
+  label L2
+  return %t1
+}

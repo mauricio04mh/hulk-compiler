@@ -1,0 +1,11 @@
+.TYPES
+  <empty>
+
+.DATA
+data @s0 = "hola"
+
+.CODE
+entry #0
+function entry #0 -> String {
+  return @s0
+}

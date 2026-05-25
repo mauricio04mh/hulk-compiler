@@ -1,0 +1,37 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  temp %t0: Number
+  temp %t1: Object
+
+  %t0 = call fact(5)
+  %t1 = call print(%t0)
+  return %t1
+}
+function fact #1 -> Number {
+  param %p0: Number name=n
+  temp %t0: Number
+  temp %t1: Boolean
+  temp %t2: Number
+  temp %t3: Number
+  temp %t4: Number
+
+  %t1 = %p0 <= 1
+  branch %t1 ? L1 : L2
+  label L1
+  %t0 = 1
+  jump L0
+  label L2
+  %t2 = %p0 - 1
+  %t3 = call fact(%t2)
+  %t4 = %p0 * %t3
+  %t0 = %t4
+  label L0
+  return %t0
+}

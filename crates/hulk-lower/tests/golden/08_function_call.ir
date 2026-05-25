@@ -1,0 +1,21 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  temp %t0: Number
+
+  %t0 = call inc(4)
+  return %t0
+}
+function inc #1 -> Number {
+  param %p0: Number name=x
+  temp %t0: Number
+
+  %t0 = %p0 + 1
+  return %t0
+}

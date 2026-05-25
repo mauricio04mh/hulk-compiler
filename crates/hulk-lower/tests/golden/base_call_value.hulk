@@ -1,0 +1,18 @@
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    move(dx: Number, dy: Number): Point {
+        self.x := self.x + dx;
+        self.y := self.y + dy;
+        self;
+    }
+}
+
+type ChildPoint(x: Number, y: Number) inherits Point(x, y) {
+    move(dx: Number, dy: Number): Point {
+        let r = base(dx, dy) in r;
+    }
+}
+
+let p = new ChildPoint(1, 2) in p.move(3, 4);

@@ -1,0 +1,6 @@
+type Box(a: Number, b: Number) {
+    value: Number = a + b * 2;
+    get(): Number => self.value;
+}
+
+let b = new Box(3, 4) in print(b.get());

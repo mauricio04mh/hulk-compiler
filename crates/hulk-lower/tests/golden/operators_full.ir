@@ -1,0 +1,67 @@
+.TYPES
+  <empty>
+
+.DATA
+data @s0 = "hello"
+data @s1 = "world"
+data @s2 = "hello"
+data @s3 = "world"
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  temp %t0: Number
+  temp %t1: Object
+  temp %t2: Number
+  temp %t3: Object
+  temp %t4: Number
+  temp %t5: Object
+  temp %t6: Number
+  temp %t7: Object
+  temp %t8: String
+  temp %t9: Object
+  temp %t10: String
+  temp %t11: Object
+  temp %t12: Boolean
+  temp %t13: Object
+  temp %t14: Boolean
+  temp %t15: Object
+  temp %t16: Boolean
+  temp %t17: Object
+  temp %t18: Boolean
+  temp %t19: Object
+  temp %t20: Boolean
+  temp %t21: Object
+  temp %t22: Boolean
+  temp %t23: Object
+  temp %t24: Boolean
+  temp %t25: Object
+
+  %t0 = 10 - 3
+  %t1 = call print(%t0)
+  %t2 = 10 / 2
+  %t3 = call print(%t2)
+  %t4 = 10 % 3
+  %t5 = call print(%t4)
+  %t6 = 2 ^ 3
+  %t7 = call print(%t6)
+  %t8 = @s0 @ @s1
+  %t9 = call print(%t8)
+  %t10 = @s2 @@ @s3
+  %t11 = call print(%t10)
+  %t12 = true & false
+  %t13 = call print(%t12)
+  %t14 = true | false
+  %t15 = call print(%t14)
+  %t16 = !false
+  %t17 = call print(%t16)
+  %t18 = 1 <= 2
+  %t19 = call print(%t18)
+  %t20 = 1 >= 2
+  %t21 = call print(%t20)
+  %t22 = 1 == 1
+  %t23 = call print(%t22)
+  %t24 = 1 != 2
+  %t25 = call print(%t24)
+  return %t25
+}
