@@ -13,11 +13,23 @@ pub enum SemanticError {
     #[error("Duplicate symbol '{name}'")]
     DuplicateSymbol { name: String },
 
+    #[error("Duplicate attribute '{attr_name}' in type '{type_name}'")]
+    DuplicateAttribute { type_name: String, attr_name: String },
+
+    #[error("Duplicate method '{method_name}' in type '{type_name}'")]
+    DuplicateMethod { type_name: String, method_name: String },
+
+    #[error("Duplicate method '{method_name}' in protocol '{protocol_name}'")]
+    DuplicateProtocolMethod { protocol_name: String, method_name: String },
+
     #[error("Undefined variable '{name}'")]
     UndefinedVariable { name: String },
 
     #[error("Undefined function '{name}'")]
     UndefinedFunction { name: String },
+
+    #[error("Undefined method '{method_name}' for type '{type_name}'")]
+    UndefinedMethod { type_name: String, method_name: String },
 
     #[error("Invalid assignment target")]
     InvalidAssignmentTarget,
@@ -37,6 +49,12 @@ pub enum SemanticError {
 
     #[error("Type mismatch: expected {expected:?}, found {found:?}")]
     TypeMismatch { expected: Type, found: Type },
+
+    #[error("Invalid index target: expected vector, found {found:?}")]
+    InvalidIndexTarget { found: Type },
+
+    #[error("Invalid iterable target: expected iterable or vector, found {found:?}")]
+    InvalidIterableTarget { found: Type },
 
     #[error("Invalid unary operand for {op:?}: found {found:?}")]
     InvalidUnaryOperand { op: UnaryOp, found: Type },

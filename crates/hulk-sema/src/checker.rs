@@ -1,8 +1,9 @@
+use crate::builtins::{builtin_constants, builtin_functions};
 use crate::context::TypeRegistry;
 use crate::error::SemanticError;
 use crate::resolver::resolve_program;
 use crate::types::Type;
-use hulk_frontend::ast::{BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Program, TypeDecl, TypeMember, UnaryOp};
+use hulk_frontend::ast::{BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, TypeDecl, TypeMember, UnaryOp};
 use std::collections::HashMap;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -132,34 +133,18 @@ pub fn check_program(program: &Program) -> Result<(), Vec<SemanticError>> {
 // ── Builtins ──────────────────────────────────────────────────────────────────
 
 fn register_builtin_constants(env: &mut TypeEnv) {
-    env.define_var("PI".to_string(), Type::Number);
-    env.define_var("E".to_string(), Type::Number);
+    for (name, ty) in builtin_constants() {
+        env.define_var(name.to_string(), ty);
+    }
 }
 
 fn register_builtin_functions(env: &mut TypeEnv) {
-    let builtins: &[(&str, &[Type], Type)] = &[
-        ("print",  &[Type::Object],                    Type::Object),
-        ("sqrt",   &[Type::Number],                    Type::Number),
-        ("sin",    &[Type::Number],                    Type::Number),
-        ("cos",    &[Type::Number],                    Type::Number),
-        ("exp",    &[Type::Number],                    Type::Number),
-        ("log",    &[Type::Number, Type::Number],      Type::Number),
-        ("rand",   &[],                                Type::Number),
-    ];
-    for (name, params, ret) in builtins {
+    for builtin in builtin_functions() {
         env.define_function(
-            name.to_string(),
-            FunctionType { params: params.to_vec(), return_type: ret.clone() },
+            builtin.name.to_string(),
+            FunctionType { params: builtin.params, return_type: builtin.return_type },
         );
     }
-    // range returns Iterable(Number) so for-loop variables get the right type.
-    env.define_function(
-        "range".to_string(),
-        FunctionType {
-            params: vec![Type::Number, Type::Number],
-            return_type: Type::Iterable(Box::new(Type::Number)),
-        },
-    );
 }
 
 // ── Pass 1 helper ─────────────────────────────────────────────────────────────
@@ -167,16 +152,7 @@ fn register_builtin_functions(env: &mut TypeEnv) {
 fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
     let mut params = Vec::new();
     for param in &func.params {
-        let ty = if let Some(ty_ref) = &param.ty {
-            let ty = Type::from_type_ref(ty_ref);
-            if let Type::UserType(ref name) = ty {
-                env.check_user_type(name);
-            }
-            ty
-        } else {
-            Type::Unknown
-        };
-        params.push(ty);
+        params.push(check_parameter_type(param, &func.name, env));
     }
 
     let ret_ty = if let Some(ret_ref) = &func.return_type {
@@ -190,6 +166,22 @@ fn register_function_signature(func: &FunctionDecl, env: &mut TypeEnv) {
     };
 
     env.define_function(func.name.clone(), FunctionType { params, return_type: ret_ty });
+}
+
+fn check_parameter_type(param: &Param, owner: &str, env: &mut TypeEnv) -> Type {
+    if let Some(ty_ref) = &param.ty {
+        let ty = Type::from_type_ref(ty_ref);
+        if let Type::UserType(ref name) = ty {
+            env.check_user_type(name);
+        }
+        ty
+    } else {
+        env.record_error(SemanticError::CannotInferParameterType {
+            function: owner.to_string(),
+            parameter: param.name.clone(),
+        });
+        Type::Unknown
+    }
 }
 
 // ── Pass 2 helper ─────────────────────────────────────────────────────────────
@@ -265,7 +257,7 @@ fn check_type_decl(td: &TypeDecl, env: &mut TypeEnv) {
     // Constructor params are visible in attribute initializers and method bodies.
     env.push_scope();
     for param in &td.params {
-        let ty = param.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Object);
+        let ty = check_parameter_type(param, &td.name, env);
         env.define_var(param.name.clone(), ty);
     }
 
@@ -303,10 +295,7 @@ fn check_method_decl(method: &MethodDecl, env: &mut TypeEnv) {
     env.push_scope();
 
     for param in &method.params {
-        let ty = param.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Object);
-        if let Type::UserType(ref name) = ty {
-            env.check_user_type(name);
-        }
+        let ty = check_parameter_type(param, &method.name, env);
         env.define_var(param.name.clone(), ty);
     }
 
@@ -669,7 +658,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIterableTarget { found: other });
+                    Type::Unknown
+                }
             };
             env.push_scope();
             env.define_var(var.clone(), elem_ty);
@@ -711,7 +703,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             let elem_ty = match iter_ty {
                 Type::Iterable(inner) | Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIterableTarget { found: other });
+                    Type::Unknown
+                }
             };
             env.push_scope();
             env.define_var(var.clone(), elem_ty);
@@ -732,7 +727,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             match vec_ty {
                 Type::Vector(inner) => *inner,
                 Type::Unknown => Type::Unknown,
-                _ => Type::Object,
+                other => {
+                    env.record_error(SemanticError::InvalidIndexTarget { found: other });
+                    Type::Unknown
+                }
             }
         }
 
@@ -829,34 +827,23 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         Expr::MethodCall { object, method, args, .. } => {
             let obj_ty = infer_expr(object, env);
 
-            let ret_ty: Option<Type> = match &obj_ty {
-                Type::UserType(tname) => {
-                    env.registry
-                        .lookup_method_info(tname, method)
-                        .map(|mi| mi.return_type.clone())
-                }
-                Type::Vector(inner) => match method.as_str() {
-                    "size" => Some(Type::Number),
-                    "current" => Some(*inner.clone()),
-                    _ => None,
-                },
-                Type::Iterable(inner) => match method.as_str() {
-                    "next" => Some(Type::Boolean),
-                    "current" => Some(*inner.clone()),
-                    "size" => Some(Type::Number),
-                    _ => None,
-                },
-                _ => None,
+            if obj_ty == Type::Unknown {
+                for arg in args { infer_expr(arg, env); }
+                return Type::Unknown;
+            }
+
+            let Some((type_name, param_types, return_type)) =
+                method_signature_for_call(&obj_ty, method, env)
+            else {
+                env.record_error(SemanticError::UndefinedMethod {
+                    type_name: method_receiver_type_name(&obj_ty),
+                    method_name: method.clone(),
+                });
+                for arg in args { infer_expr(arg, env); }
+                return Type::Unknown;
             };
 
-            for arg in args {
-                infer_expr(arg, env);
-            }
-
-            match obj_ty {
-                Type::Unknown => Type::Unknown,
-                _ => ret_ty.unwrap_or(Type::Object),
-            }
+            validate_method_call(type_name, method, param_types, return_type, args, env)
         }
 
         Expr::SelfRef => match &env.current_type {
@@ -925,6 +912,81 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
             ret_type
         }
+    }
+}
+
+fn method_signature_for_call(
+    obj_ty: &Type,
+    method: &str,
+    env: &TypeEnv,
+) -> Option<(String, Vec<Type>, Type)> {
+    match obj_ty {
+        Type::UserType(tname) => env
+            .registry
+            .lookup_method_info(tname, method)
+            .map(|mi| (tname.clone(), mi.params, mi.return_type)),
+        Type::Vector(inner) => match method {
+            "size" => Some(("Vector".to_string(), vec![], Type::Number)),
+            "current" => Some(("Vector".to_string(), vec![], *inner.clone())),
+            _ => None,
+        },
+        Type::Iterable(inner) => match method {
+            "next" => Some(("Iterable".to_string(), vec![], Type::Boolean)),
+            "current" => Some(("Iterable".to_string(), vec![], *inner.clone())),
+            "size" => Some(("Iterable".to_string(), vec![], Type::Number)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn validate_method_call(
+    type_name: String,
+    method: &str,
+    param_types: Vec<Type>,
+    return_type: Type,
+    args: &[Expr],
+    env: &mut TypeEnv,
+) -> Type {
+    let function = format!("{type_name}.{method}");
+
+    if param_types.len() != args.len() {
+        env.record_error(SemanticError::ArityMismatch {
+            function,
+            expected: param_types.len(),
+            found: args.len(),
+        });
+        for arg in args { infer_expr(arg, env); }
+        return return_type;
+    }
+
+    for (idx, arg) in args.iter().enumerate() {
+        let found = infer_expr(arg, env);
+        let expected = &param_types[idx];
+        if !is_assignable(&found, expected, &env.registry) {
+            env.record_error(SemanticError::InvalidArgumentType {
+                function: function.clone(),
+                index: idx,
+                expected: expected.clone(),
+                found,
+            });
+        }
+    }
+
+    return_type
+}
+
+fn method_receiver_type_name(ty: &Type) -> String {
+    match ty {
+        Type::Number => "Number".to_string(),
+        Type::String => "String".to_string(),
+        Type::Boolean => "Boolean".to_string(),
+        Type::Object => "Object".to_string(),
+        Type::UserType(name) => name.clone(),
+        Type::Vector(_) => "Vector".to_string(),
+        Type::Iterable(_) => "Iterable".to_string(),
+        Type::Functor { .. } => "Functor".to_string(),
+        Type::Unknown => "Unknown".to_string(),
     }
 }
 

@@ -1,4 +1,4 @@
-use hulk_frontend::parse_hulk_control_program;
+use hulk_frontend::{parse_hulk_control_program, parse_hulk_types_program};
 use hulk_sema::check_program;
 use hulk_sema::error::SemanticError;
 use hulk_sema::types::Type;
@@ -8,8 +8,22 @@ fn check_ok(source: &str) {
     check_program(&program).expect("type check should pass");
 }
 
+fn check_ok_types(source: &str) {
+    let program = parse_hulk_types_program(source).expect("source should parse");
+    check_program(&program).expect("type check should pass");
+}
+
 fn check_err(source: &str) -> SemanticError {
     let program = parse_hulk_control_program(source).expect("source should parse");
+    check_program(&program)
+        .expect_err("type check should fail")
+        .into_iter()
+        .next()
+        .expect("at least one error")
+}
+
+fn check_err_types(source: &str) -> SemanticError {
+    let program = parse_hulk_types_program(source).expect("source should parse");
     check_program(&program)
         .expect_err("type check should fail")
         .into_iter()
@@ -105,5 +119,87 @@ fn case_n_while_invalid_condition() {
         SemanticError::InvalidConditionType {
             found: Type::Number
         }
+    );
+}
+
+#[test]
+fn builtin_log_takes_two_numbers() {
+    check_ok("log(100, 10);");
+}
+
+#[test]
+fn builtin_log_rejects_one_argument() {
+    let err = check_err("log(100);");
+    assert!(matches!(err, SemanticError::ArityMismatch { .. }));
+}
+
+#[test]
+fn builtin_log_rejects_string_argument() {
+    let err = check_err("log(\"100\", 10);");
+    assert!(matches!(err, SemanticError::InvalidArgumentType { .. }));
+}
+
+#[test]
+fn builtin_range_takes_two_numbers() {
+    check_ok_types("for (x in range(0, 10)) x + 1;");
+}
+
+#[test]
+fn builtin_constants_are_numbers() {
+    check_ok("PI + E;");
+}
+
+#[test]
+fn unannotated_method_parameter_reports_cannot_infer() {
+    let err = check_err_types(
+        "type A {
+            f(x): Number => 1;
+        }
+
+        new A().f(1);",
+    );
+
+    assert!(matches!(
+        err,
+        SemanticError::CannotInferParameterType { function, parameter }
+            if function == "f" && parameter == "x"
+    ));
+}
+
+#[test]
+fn unannotated_type_parameter_reports_cannot_infer() {
+    let err = check_err_types(
+        "type Box(x) {
+            value: Object = x;
+        }
+
+        new Box(1);",
+    );
+
+    assert!(matches!(
+        err,
+        SemanticError::CannotInferParameterType { function, parameter }
+            if function == "Box" && parameter == "x"
+    ));
+}
+
+#[test]
+fn annotated_function_parameter_still_passes() {
+    check_ok("function f(x: Number): Number => x + 1;\n\nf(1);");
+}
+
+#[test]
+fn unannotated_let_still_passes() {
+    check_ok("let x = 42 in x;");
+}
+
+#[test]
+fn annotated_type_parameter_still_passes() {
+    check_ok_types(
+        "type Box(x: Number) {
+            value: Number = x;
+        }
+
+        new Box(1);",
     );
 }
