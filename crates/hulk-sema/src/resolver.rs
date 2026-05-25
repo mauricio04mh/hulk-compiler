@@ -31,7 +31,8 @@ impl Resolver {
 
     fn register_builtins(&mut self) {
         for signature in builtin_functions() {
-            self.builtins.insert(signature.name.to_string(), signature.params.len());
+            self.builtins
+                .insert(signature.name.to_string(), signature.params.len());
             self.scopes
                 .define(Symbol {
                     name: signature.name.to_string(),
@@ -187,6 +188,11 @@ impl Resolver {
                     Expr::Var(name, _) => {
                         self.resolve_variable(name)?;
                     }
+                    Expr::MemberAccess { object, .. }
+                        if matches!(object.as_ref(), Expr::SelfRef) =>
+                    {
+                        self.resolve_expr(object)?;
+                    }
                     _ => return Err(SemanticError::InvalidAssignmentTarget),
                 }
                 self.resolve_expr(value)
@@ -235,11 +241,18 @@ impl Resolver {
                 }
                 self.resolve_expr(else_branch)
             }
-            Expr::While { condition, body, .. } => {
+            Expr::While {
+                condition, body, ..
+            } => {
                 self.resolve_expr(condition)?;
                 self.resolve_expr(body)
             }
-            Expr::For { var, iterable, body, .. } => {
+            Expr::For {
+                var,
+                iterable,
+                body,
+                ..
+            } => {
                 self.resolve_expr(iterable)?;
                 self.scopes.push();
                 self.scopes.define(Symbol {
@@ -257,7 +270,12 @@ impl Resolver {
                 }
                 Ok(())
             }
-            Expr::VectorGenerator { body, var, iterable, .. } => {
+            Expr::VectorGenerator {
+                body,
+                var,
+                iterable,
+                ..
+            } => {
                 self.resolve_expr(iterable)?;
                 self.scopes.push();
                 self.scopes.define(Symbol {

@@ -55,3 +55,11 @@ pub fn builtin_functions() -> Vec<BuiltinSignature> {
 pub fn builtin_constants() -> Vec<(&'static str, Type)> {
     vec![("PI", Type::Number), ("E", Type::Number)]
 }
+
+pub fn builtin_constant_value(name: &str) -> Option<f64> {
+    match name {
+        "PI" => Some(std::f64::consts::PI),
+        "E" => Some(std::f64::consts::E),
+        _ => None,
+    }
+}

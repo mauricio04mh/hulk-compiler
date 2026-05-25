@@ -1,0 +1,16 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  local %l0: Number name=x
+  temp %t0: Number
+
+  %l0 = 5
+  %t0 = %l0 + 1
+  return %t0
+}

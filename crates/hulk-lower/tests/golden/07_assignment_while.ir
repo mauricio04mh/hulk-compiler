@@ -1,0 +1,27 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  local %l0: Number name=x
+  temp %t0: Number
+  temp %t1: Boolean
+  temp %t2: Number
+
+  %l0 = 3
+  %t0 = unit
+  label L0
+  %t1 = %l0 > 0
+  branch %t1 ? L1 : L2
+  label L1
+  %t2 = %l0 - 1
+  %l0 = %t2
+  %t0 = %t2
+  jump L0
+  label L2
+  return %t0
+}

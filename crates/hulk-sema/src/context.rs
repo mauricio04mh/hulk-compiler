@@ -43,8 +43,12 @@ impl TypeRegistry {
         for decl in &program.declarations {
             match decl {
                 Decl::Type(td) => {
-                    if registry.types.contains_key(&td.name) || registry.protocols.contains_key(&td.name) {
-                        return Err(SemanticError::DuplicateType { name: td.name.clone() });
+                    if registry.types.contains_key(&td.name)
+                        || registry.protocols.contains_key(&td.name)
+                    {
+                        return Err(SemanticError::DuplicateType {
+                            name: td.name.clone(),
+                        });
                     }
                     registry.types.insert(
                         td.name.clone(),
@@ -58,8 +62,12 @@ impl TypeRegistry {
                     );
                 }
                 Decl::Protocol(pd) => {
-                    if registry.protocols.contains_key(&pd.name) || registry.types.contains_key(&pd.name) {
-                        return Err(SemanticError::DuplicateType { name: pd.name.clone() });
+                    if registry.protocols.contains_key(&pd.name)
+                        || registry.types.contains_key(&pd.name)
+                    {
+                        return Err(SemanticError::DuplicateType {
+                            name: pd.name.clone(),
+                        });
                     }
                     registry.protocols.insert(
                         pd.name.clone(),
@@ -82,7 +90,10 @@ impl TypeRegistry {
                         .params
                         .iter()
                         .map(|p| {
-                            let ty = p.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Unknown);
+                            let ty =
+                                p.ty.as_ref()
+                                    .map(Type::from_type_ref)
+                                    .unwrap_or(Type::Unknown);
                             (p.name.clone(), ty)
                         })
                         .collect();
@@ -95,7 +106,9 @@ impl TypeRegistry {
                     for member in &td.members {
                         match member {
                             TypeMember::Attribute(attr) => {
-                                if attributes.contains_key(&attr.name) || methods.contains_key(&attr.name) {
+                                if attributes.contains_key(&attr.name)
+                                    || methods.contains_key(&attr.name)
+                                {
                                     return Err(SemanticError::DuplicateAttribute {
                                         type_name: td.name.clone(),
                                         attr_name: attr.name.clone(),
@@ -109,7 +122,9 @@ impl TypeRegistry {
                                 attributes.insert(attr.name.clone(), ty);
                             }
                             TypeMember::Method(method) => {
-                                if methods.contains_key(&method.name) || attributes.contains_key(&method.name) {
+                                if methods.contains_key(&method.name)
+                                    || attributes.contains_key(&method.name)
+                                {
                                     return Err(SemanticError::DuplicateMethod {
                                         type_name: td.name.clone(),
                                         method_name: method.name.clone(),
@@ -129,7 +144,13 @@ impl TypeRegistry {
                                     .as_ref()
                                     .map(Type::from_type_ref)
                                     .unwrap_or(Type::Unknown);
-                                methods.insert(method.name.clone(), MethodInfo { params, return_type });
+                                methods.insert(
+                                    method.name.clone(),
+                                    MethodInfo {
+                                        params,
+                                        return_type,
+                                    },
+                                );
                             }
                         }
                     }
@@ -157,14 +178,24 @@ impl TypeRegistry {
                         let params = method
                             .params
                             .iter()
-                            .map(|p| p.ty.as_ref().map(Type::from_type_ref).unwrap_or(Type::Unknown))
+                            .map(|p| {
+                                p.ty.as_ref()
+                                    .map(Type::from_type_ref)
+                                    .unwrap_or(Type::Unknown)
+                            })
                             .collect();
                         let return_type = method
                             .return_type
                             .as_ref()
                             .map(Type::from_type_ref)
                             .unwrap_or(Type::Unknown);
-                        methods.insert(method.name.clone(), MethodInfo { params, return_type });
+                        methods.insert(
+                            method.name.clone(),
+                            MethodInfo {
+                                params,
+                                return_type,
+                            },
+                        );
                     }
                     registry.protocols.insert(
                         pd.name.clone(),
@@ -188,18 +219,33 @@ impl TypeRegistry {
                 let parent_name = ti.parent.clone();
                 // passthrough = declared with no own params, and parent has no explicit arg list
                 let td_opt = program.declarations.iter().find_map(|d| {
-                    if let Decl::Type(td) = d { if td.name == *name { return Some(td); } }
+                    if let Decl::Type(td) = d {
+                        if td.name == *name {
+                            return Some(td);
+                        }
+                    }
                     None
                 });
-                let is_passthrough = td_opt.map(|td| {
-                    td.params.is_empty() && td.parent.as_ref().map(|p| p.args.is_none()).unwrap_or(false)
-                }).unwrap_or(false);
+                let is_passthrough = td_opt
+                    .map(|td| {
+                        td.params.is_empty()
+                            && td
+                                .parent
+                                .as_ref()
+                                .map(|p| p.args.is_none())
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
                 (ti.constructor_params.len(), parent_name, is_passthrough)
             };
             if has_own_params == 0 && is_passthrough {
                 if let Some(pname) = parent_name {
                     // Collect parent params (which may themselves have been filled in already).
-                    let parent_params = registry.types.get(&pname).map(|p| p.constructor_params.clone()).unwrap_or_default();
+                    let parent_params = registry
+                        .types
+                        .get(&pname)
+                        .map(|p| p.constructor_params.clone())
+                        .unwrap_or_default();
                     if !parent_params.is_empty() {
                         registry.types.get_mut(name).unwrap().constructor_params = parent_params;
                     }
@@ -208,12 +254,31 @@ impl TypeRegistry {
         }
 
         // W2f: Pre-register builtin Iterable protocol (if not user-defined).
-        registry.protocols.entry("Iterable".to_string()).or_insert_with(|| {
-            let mut methods = HashMap::new();
-            methods.insert("next".to_string(), MethodInfo { params: vec![], return_type: Type::Boolean });
-            methods.insert("current".to_string(), MethodInfo { params: vec![], return_type: Type::Object });
-            ProtocolInfo { name: "Iterable".to_string(), parent: None, methods }
-        });
+        registry
+            .protocols
+            .entry("Iterable".to_string())
+            .or_insert_with(|| {
+                let mut methods = HashMap::new();
+                methods.insert(
+                    "next".to_string(),
+                    MethodInfo {
+                        params: vec![],
+                        return_type: Type::Boolean,
+                    },
+                );
+                methods.insert(
+                    "current".to_string(),
+                    MethodInfo {
+                        params: vec![],
+                        return_type: Type::Object,
+                    },
+                );
+                ProtocolInfo {
+                    name: "Iterable".to_string(),
+                    parent: None,
+                    methods,
+                }
+            });
 
         registry.validate_inheritance()?;
         registry.validate_protocol_conformance()?;
@@ -237,7 +302,9 @@ impl TypeRegistry {
         if self.type_exists(name) {
             Ok(())
         } else {
-            Err(SemanticError::UndefinedType { name: name.to_string() })
+            Err(SemanticError::UndefinedType {
+                name: name.to_string(),
+            })
         }
     }
 
@@ -257,7 +324,9 @@ impl TypeRegistry {
     pub fn lookup_attribute(&self, type_name: &str, attr_name: &str) -> Option<Type> {
         let mut current = Some(type_name);
         while let Some(name) = current {
-            let Some(ti) = self.types.get(name) else { break };
+            let Some(ti) = self.types.get(name) else {
+                break;
+            };
             if let Some(ty) = ti.attributes.get(attr_name) {
                 return Some(ty.clone());
             }
@@ -271,7 +340,9 @@ impl TypeRegistry {
     pub fn lookup_method_info(&self, type_name: &str, method_name: &str) -> Option<MethodInfo> {
         let mut current = Some(type_name);
         while let Some(name) = current {
-            let Some(ti) = self.types.get(name) else { break };
+            let Some(ti) = self.types.get(name) else {
+                break;
+            };
             if let Some(mi) = ti.methods.get(method_name) {
                 return Some(mi.clone());
             }
@@ -320,7 +391,9 @@ impl TypeRegistry {
                     });
                 }
                 if !self.type_exists(parent_name) {
-                    return Err(SemanticError::UndefinedType { name: parent_name.clone() });
+                    return Err(SemanticError::UndefinedType {
+                        name: parent_name.clone(),
+                    });
                 }
             }
 
@@ -340,7 +413,9 @@ impl TypeRegistry {
         for info in self.protocols.values() {
             if let Some(parent_name) = &info.parent {
                 if !self.protocols.contains_key(parent_name) {
-                    return Err(SemanticError::UndefinedType { name: parent_name.clone() });
+                    return Err(SemanticError::UndefinedType {
+                        name: parent_name.clone(),
+                    });
                 }
             }
         }
@@ -351,8 +426,12 @@ impl TypeRegistry {
     /// W2c: For each method the type defines that also exists in its concrete parent,
     /// verify the signatures match exactly (same arity, param types, return type).
     fn validate_method_overrides(&self, type_name: &str) -> Result<(), SemanticError> {
-        let Some(type_info) = self.types.get(type_name) else { return Ok(()); };
-        let Some(parent_name) = type_info.parent.as_deref() else { return Ok(()); };
+        let Some(type_info) = self.types.get(type_name) else {
+            return Ok(());
+        };
+        let Some(parent_name) = type_info.parent.as_deref() else {
+            return Ok(());
+        };
         // Only validate against concrete parents; protocol conformance is checked separately.
         if !self.types.contains_key(parent_name) {
             return Ok(());
@@ -435,8 +514,11 @@ impl TypeRegistry {
                 });
             }
             // Contravariant params: expected_param must be assignable to actual_param.
-            for (idx, (actual_p, expected_p)) in
-                actual_sig.params.iter().zip(expected_sig.params.iter()).enumerate()
+            for (idx, (actual_p, expected_p)) in actual_sig
+                .params
+                .iter()
+                .zip(expected_sig.params.iter())
+                .enumerate()
             {
                 if !self.is_type_assignable(expected_p, actual_p) {
                     return Err(SemanticError::ProtocolParamTypeMismatch {
@@ -454,7 +536,9 @@ impl TypeRegistry {
 
     /// W2e: Returns true when `type_name` structurally satisfies `protocol_name`.
     pub fn implicitly_conforms_to_protocol(&self, type_name: &str, protocol_name: &str) -> bool {
-        let Some(protocol) = self.protocols.get(protocol_name) else { return false };
+        let Some(protocol) = self.protocols.get(protocol_name) else {
+            return false;
+        };
         let methods: Vec<(String, MethodInfo)> = protocol
             .methods
             .iter()
@@ -470,9 +554,7 @@ impl TypeRegistry {
             if !self.is_type_assignable(&actual_sig.return_type, &expected_sig.return_type) {
                 return false;
             }
-            for (actual_p, expected_p) in
-                actual_sig.params.iter().zip(expected_sig.params.iter())
-            {
+            for (actual_p, expected_p) in actual_sig.params.iter().zip(expected_sig.params.iter()) {
                 if !self.is_type_assignable(expected_p, actual_p) {
                     return false;
                 }
@@ -483,8 +565,12 @@ impl TypeRegistry {
 
     /// Registry-aware assignability, mirroring the checker's `is_assignable`.
     fn is_type_assignable(&self, sub: &Type, target: &Type) -> bool {
-        if *sub == Type::Unknown || *target == Type::Unknown { return true; }
-        if sub == target || *target == Type::Object { return true; }
+        if *sub == Type::Unknown || *target == Type::Unknown {
+            return true;
+        }
+        if sub == target || *target == Type::Object {
+            return true;
+        }
         match (sub, target) {
             (Type::UserType(sn), Type::UserType(tn)) => self.is_descendant_of(sn, tn),
             (Type::UserType(_), Type::Object) => true,

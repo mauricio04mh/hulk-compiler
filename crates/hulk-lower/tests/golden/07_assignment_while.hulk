@@ -1,0 +1,1 @@
+let x: Number = 3 in while (x > 0) x := x - 1;

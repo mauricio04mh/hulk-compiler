@@ -1,0 +1,87 @@
+.TYPES
+type Point #0 {
+  attr #0 x: Number
+  attr #1 y: Number
+  method #0 move : Point_move
+  method #1 getX : Point_getX
+}
+type ColoredPoint #1 inherits Point {
+  attr #0 x: Number
+  attr #1 y: Number
+  attr #2 color: String
+  method #0 move : ColoredPoint_move
+  method #1 getX : Point_getX
+}
+
+.DATA
+data @s0 = "red"
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  local %l0: Point name=p
+  temp %t0: ColoredPoint
+  temp %t1: Point
+  temp %t2: Number
+  temp %t3: Object
+
+  %t0 = allocate ColoredPoint
+  %t0 = static_call ColoredPoint_init(%t0, 1, 2, @s0)
+  %l0 = %t0
+  %t1 = vcall %l0.Point::move#0(%l0, 3, 4)
+  %t2 = vcall %l0.Point::getX#1(%l0)
+  %t3 = call print(%t2)
+  return %t3
+}
+function Point_init #1 -> Point {
+  param %p0: Point name=self
+  param %p1: Number name=x
+  param %p2: Number name=y
+
+  setattr %p0, #0, %p1
+  setattr %p0, #1, %p2
+  return %p0
+}
+method Point.move #2 -> Point {
+  param %p0: Point name=self
+  param %p1: Number name=dx
+  param %p2: Number name=dy
+  temp %t0: Number
+  temp %t1: Number
+  temp %t2: Number
+  temp %t3: Number
+
+  %t0 = getattr %p0, #0
+  %t1 = %t0 + %p1
+  setattr %p0, #0, %t1
+  %t2 = getattr %p0, #1
+  %t3 = %t2 + %p2
+  setattr %p0, #1, %t3
+  return %p0
+}
+method Point.getX #3 -> Number {
+  param %p0: Point name=self
+  temp %t0: Number
+
+  %t0 = getattr %p0, #0
+  return %t0
+}
+function ColoredPoint_init #4 -> ColoredPoint {
+  param %p0: ColoredPoint name=self
+  param %p1: Number name=x
+  param %p2: Number name=y
+  param %p3: String name=color
+
+  static_call Point_init(%p0, %p1, %p2)
+  setattr %p0, #2, %p3
+  return %p0
+}
+method ColoredPoint.move #5 -> Point {
+  param %p0: ColoredPoint name=self
+  param %p1: Number name=dx
+  param %p2: Number name=dy
+  temp %t0: Point
+
+  %t0 = base_call Point::move(%p0, %p1, %p2)
+  return %p0
+}

@@ -1,0 +1,6 @@
+type A {
+    f(): Number => 1;
+}
+
+let x: Object = new A() in
+    if (x is A) (x as A).f() else 0;

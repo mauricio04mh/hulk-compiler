@@ -1,0 +1,11 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Boolean {
+  return true
+}

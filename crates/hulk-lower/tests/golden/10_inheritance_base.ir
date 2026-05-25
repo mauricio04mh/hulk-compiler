@@ -1,0 +1,47 @@
+.TYPES
+type A #0 {
+  method #0 f : A_f
+}
+type B #1 inherits A {
+  method #0 f : B_f
+}
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  temp %t0: B
+  temp %t1: Number
+
+  %t0 = allocate B
+  %t0 = static_call B_init(%t0)
+  %t1 = vcall %t0.B::f#0(%t0)
+  return %t1
+}
+function A_init #1 -> A {
+  param %p0: A name=self
+
+  return %p0
+}
+method A.f #2 -> Number {
+  param %p0: A name=self
+
+  return 1
+}
+function B_init #3 -> B {
+  param %p0: B name=self
+
+  static_call A_init(%p0)
+  return %p0
+}
+method B.f #4 -> Number {
+  param %p0: B name=self
+  temp %t0: Number
+  temp %t1: Number
+
+  %t0 = base_call A::f(%p0)
+  %t1 = %t0 + 1
+  return %t1
+}

@@ -1,0 +1,6 @@
+type Point(x: Number) {
+    x: Number = x;
+    getX(): Number => self.x;
+}
+
+new Point(4).getX();

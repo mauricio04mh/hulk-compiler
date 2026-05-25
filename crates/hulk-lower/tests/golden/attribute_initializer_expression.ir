@@ -1,0 +1,43 @@
+.TYPES
+type Box #0 {
+  attr #0 value: Number
+  method #0 get : Box_get
+}
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  local %l0: Box name=b
+  temp %t0: Box
+  temp %t1: Number
+  temp %t2: Object
+
+  %t0 = allocate Box
+  %t0 = static_call Box_init(%t0, 3, 4)
+  %l0 = %t0
+  %t1 = vcall %l0.Box::get#0(%l0)
+  %t2 = call print(%t1)
+  return %t2
+}
+function Box_init #1 -> Box {
+  param %p0: Box name=self
+  param %p1: Number name=a
+  param %p2: Number name=b
+  temp %t0: Number
+  temp %t1: Number
+
+  %t0 = %p2 * 2
+  %t1 = %p1 + %t0
+  setattr %p0, #0, %t1
+  return %p0
+}
+method Box.get #2 -> Number {
+  param %p0: Box name=self
+  temp %t0: Number
+
+  %t0 = getattr %p0, #0
+  return %t0
+}

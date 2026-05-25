@@ -1,0 +1,30 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number[] {
+  local %l0: Object name=_gen_iter
+  local %l1: Number name=x
+  temp %t0: Number[]
+  temp %t1: Number[]
+  temp %t2: Boolean
+  temp %t3: Number
+
+  %t0 = vector []
+  %t1 = vector [1, 2, 3]
+  %l0 = %t1
+  label L0
+  %t2 = vcall %l0.Iterable::next#0(%l0)
+  branch %t2 ? L1 : L2
+  label L1
+  %l1 = vcall %l0.Iterable::current#1(%l0)
+  %t3 = %l1 * 2
+  vector_push %t0, %t3
+  jump L0
+  label L2
+  return %t0
+}

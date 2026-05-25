@@ -1,0 +1,21 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Object {
+  local %l0: Number name=x
+  local %l1: Number name=y
+  temp %t0: Number
+  temp %t1: Object
+
+  %l0 = 0
+  %l1 = 10
+  %t0 = %l1 + 1
+  %l0 = %t0
+  %t1 = call print(%l0)
+  return %t1
+}

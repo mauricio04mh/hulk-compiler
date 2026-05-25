@@ -14,13 +14,22 @@ pub enum SemanticError {
     DuplicateSymbol { name: String },
 
     #[error("Duplicate attribute '{attr_name}' in type '{type_name}'")]
-    DuplicateAttribute { type_name: String, attr_name: String },
+    DuplicateAttribute {
+        type_name: String,
+        attr_name: String,
+    },
 
     #[error("Duplicate method '{method_name}' in type '{type_name}'")]
-    DuplicateMethod { type_name: String, method_name: String },
+    DuplicateMethod {
+        type_name: String,
+        method_name: String,
+    },
 
     #[error("Duplicate method '{method_name}' in protocol '{protocol_name}'")]
-    DuplicateProtocolMethod { protocol_name: String, method_name: String },
+    DuplicateProtocolMethod {
+        protocol_name: String,
+        method_name: String,
+    },
 
     #[error("Undefined variable '{name}'")]
     UndefinedVariable { name: String },
@@ -29,7 +38,10 @@ pub enum SemanticError {
     UndefinedFunction { name: String },
 
     #[error("Undefined method '{method_name}' for type '{type_name}'")]
-    UndefinedMethod { type_name: String, method_name: String },
+    UndefinedMethod {
+        type_name: String,
+        method_name: String,
+    },
 
     #[error("Invalid assignment target")]
     InvalidAssignmentTarget,
@@ -102,7 +114,10 @@ pub enum SemanticError {
     CircularInheritance { name: String },
 
     #[error("Type '{type_name}' is missing method '{method_name}' required by protocol")]
-    MissingProtocolMethod { type_name: String, method_name: String },
+    MissingProtocolMethod {
+        type_name: String,
+        method_name: String,
+    },
 
     #[error(
         "Method '{method_name}' in '{type_name}' has wrong arity for protocol: expected {expected} params, found {found}"
@@ -114,14 +129,24 @@ pub enum SemanticError {
         found: usize,
     },
 
-    #[error("Attribute '{attr_name}' of type '{type_name}' is private and cannot be accessed externally")]
-    AttributeIsPrivate { type_name: String, attr_name: String },
+    #[error(
+        "Attribute '{attr_name}' of type '{type_name}' is private and cannot be accessed externally"
+    )]
+    AttributeIsPrivate {
+        type_name: String,
+        attr_name: String,
+    },
 
     #[error("Type '{child}' cannot inherit from primitive type '{parent}'")]
     CannotInheritFromPrimitive { child: String, parent: String },
 
-    #[error("Override of method '{method_name}' in '{type_name}' does not match the parent signature")]
-    MethodOverrideSignatureMismatch { type_name: String, method_name: String },
+    #[error(
+        "Override of method '{method_name}' in '{type_name}' does not match the parent signature"
+    )]
+    MethodOverrideSignatureMismatch {
+        type_name: String,
+        method_name: String,
+    },
 
     #[error(
         "Method '{method_name}' in '{type_name}' has wrong return type for protocol: expected {expected:?}, found {found:?}"

@@ -1,0 +1,16 @@
+.TYPES
+  <empty>
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  temp %t0: Number[]
+  temp %t1: Number
+
+  %t0 = vector [1, 2, 3]
+  %t1 = vector_get %t0[0]
+  return %t1
+}
