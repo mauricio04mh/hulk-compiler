@@ -83,7 +83,10 @@ impl ParseError {
                     format!("{} Unexpected {}", location, found_display)
                 } else {
                     let expected_str = format_expected_list(&self.expected);
-                    format!("{} Expected {}, found {}", location, expected_str, found_display)
+                    format!(
+                        "{} Expected {}, found {}",
+                        location, expected_str, found_display
+                    )
                 }
             }
         }

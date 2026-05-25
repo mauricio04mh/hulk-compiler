@@ -43,7 +43,9 @@ pub struct PrattParser {
 
 impl PrattParser {
     pub fn new(config: PrattConfig) -> Self {
-        Self { config: Arc::new(config) }
+        Self {
+            config: Arc::new(config),
+        }
     }
 
     fn from_arc(config: Arc<PrattConfig>) -> Self {
@@ -286,7 +288,11 @@ impl<'a> PrattState<'a> {
         Ok(left)
     }
 
-    fn expect_ident_after(&mut self, op_tok: &ParseToken, op_name: &str) -> Result<ParseToken, ParseError> {
+    fn expect_ident_after(
+        &mut self,
+        op_tok: &ParseToken,
+        op_name: &str,
+    ) -> Result<ParseToken, ParseError> {
         let tok = self.current().cloned().ok_or_else(|| ParseError {
             message: format!("Expected type name after '{}'", op_name),
             line: op_tok.line,

@@ -155,8 +155,9 @@ fn registry_is_descendant_transitive() {
 
 #[test]
 fn registry_lookup_attribute_inherited() {
-    let program =
-        parse("type Animal(name: String) { name: String = name; }\ntype Dog inherits Animal(\"x\") {}\n42;");
+    let program = parse(
+        "type Animal(name: String) { name: String = name; }\ntype Dog inherits Animal(\"x\") {}\n42;",
+    );
     let registry = TypeRegistry::build(&program).unwrap();
     let ty = registry.lookup_attribute("Dog", "name");
     assert_eq!(ty, Some(Type::String));
@@ -229,7 +230,10 @@ fn protocol_wrong_arity_error() {
          42;",
     );
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::ProtocolMethodSignatureMismatch { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::ProtocolMethodSignatureMismatch { .. }
+    ));
 }
 
 // ── base() call validation ────────────────────────────────────────────────────
@@ -278,7 +282,11 @@ fn multiple_errors_reported() {
          function bad2(y: Number): Number => true;\n\
          bad1(0);",
     );
-    assert!(errors.len() >= 2, "expected at least 2 errors, got {}", errors.len());
+    assert!(
+        errors.len() >= 2,
+        "expected at least 2 errors, got {}",
+        errors.len()
+    );
 }
 
 #[test]
@@ -290,14 +298,23 @@ fn multiple_type_member_errors() {
          }\n\
          42;",
     );
-    assert!(errors.len() >= 2, "expected at least 2 errors, got {}", errors.len());
+    assert!(
+        errors.len() >= 2,
+        "expected at least 2 errors, got {}",
+        errors.len()
+    );
 }
 
 #[test]
 fn unknown_propagates_without_cascading() {
     // An undefined variable should produce exactly one error, not many cascading errors.
     let errors = check_errors("undefined_var + 1;");
-    assert_eq!(errors.len(), 1, "expected exactly 1 error, got {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error, got {:?}",
+        errors
+    );
 }
 
 // ── Vector element type propagation ──────────────────────────────────────────

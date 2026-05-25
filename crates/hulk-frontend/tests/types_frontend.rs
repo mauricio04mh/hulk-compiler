@@ -44,10 +44,7 @@ fn case_b_type_with_params_and_attributes() {
     match &ty.members[0] {
         TypeMember::Attribute(attr) => {
             assert_eq!(attr.name, "x");
-            assert_eq!(
-                attr.ty,
-                Some(TypeRef::Simple("Number".to_string()))
-            );
+            assert_eq!(attr.ty, Some(TypeRef::Simple("Number".to_string())));
         }
         other => panic!("expected attribute, got {:?}", other),
     }
@@ -153,7 +150,9 @@ fn case_e_self_access_and_chained_method_call() {
             assert_eq!(method, "get");
             assert!(args.is_empty());
             match object.as_ref() {
-                Expr::New { type_name, args, .. } => {
+                Expr::New {
+                    type_name, args, ..
+                } => {
                     assert_eq!(type_name, "A");
                     assert!(args.is_empty());
                 }
@@ -180,7 +179,13 @@ fn case_f_base_call() {
         })
         .expect("expected get method");
 
-    assert_eq!(method.body, Expr::BaseCall { span: Span::default(), args: vec![] });
+    assert_eq!(
+        method.body,
+        Expr::BaseCall {
+            span: Span::default(),
+            args: vec![]
+        }
+    );
 }
 
 #[test]
@@ -236,10 +241,8 @@ fn parses_member_and_method_from_pratt() {
 fn recovery_bad_type_member_reports_one_error() {
     // `x: 42 = 0;` — `42` is not a valid type identifier.
     // The bad member is skipped; `y` should parse cleanly.
-    let err = parse_hulk_types_program(
-        "type A {\n    x: 42 = 0;\n    y: Number = 1;\n}\nnew A();",
-    )
-    .expect_err("should fail due to bad type member");
+    let err = parse_hulk_types_program("type A {\n    x: 42 = 0;\n    y: Number = 1;\n}\nnew A();")
+        .expect_err("should fail due to bad type member");
     let FrontendError::ParseErrors(list) = err else {
         panic!("expected ParseErrors, got: {:?}", err);
     };

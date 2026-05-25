@@ -1,7 +1,7 @@
 use hulk_parsegen::gx::parser::parse_gx;
 use hulk_parsegen::runtime::parser::RuntimeParser;
-use hulk_parsegen::runtime::token::ParseToken;
 use hulk_parsegen::runtime::pratt::{Associativity, OperatorInfo, PrattConfig, PrattParser};
+use hulk_parsegen::runtime::token::ParseToken;
 use hulk_parsegen::spec::first::compute_first_sets;
 use hulk_parsegen::spec::follow::compute_follow_sets;
 use hulk_parsegen::spec::normalize::normalize_grammar;
@@ -42,10 +42,7 @@ fn minimal_pratt() -> PrattParser {
         );
     }
 
-    let unary_prefix_ops = ["NOT", "MINUS"]
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let unary_prefix_ops = ["NOT", "MINUS"].into_iter().map(str::to_string).collect();
     let primary_tokens = ["NUMBER", "IDENT", "STRING", "TRUE", "FALSE"]
         .into_iter()
         .map(str::to_string)
@@ -85,7 +82,11 @@ fn build_functions_parser() -> RuntimeParser {
     let first = compute_first_sets(&spec);
     let follow = compute_follow_sets(&spec, &first);
     let table = build_ll1_table(&spec, &first, &follow).expect("grammar must be LL(1)");
-    RuntimeParser::new(spec, table).with_pratt_hook("OperatorExpr", minimal_pratt(), functions_stop_tokens())
+    RuntimeParser::new(spec, table).with_pratt_hook(
+        "OperatorExpr",
+        minimal_pratt(),
+        functions_stop_tokens(),
+    )
 }
 
 // --- Happy path ---
@@ -156,7 +157,12 @@ fn recovers_from_single_invalid_statement_in_block() {
         tok("EOF", ""),
     ];
     let errors = parser.parse(&tokens).expect_err("should have parse errors");
-    assert_eq!(errors.len(), 1, "expected exactly one error, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly one error, got: {:?}",
+        errors
+    );
     assert_eq!(errors[0].found, Some("PLUS".to_string()));
 }
 
@@ -176,7 +182,12 @@ fn recovers_from_two_invalid_statements_reports_two_errors() {
         tok("EOF", ""),
     ];
     let errors = parser.parse(&tokens).expect_err("should have parse errors");
-    assert_eq!(errors.len(), 2, "expected two errors, one per bad statement, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        2,
+        "expected two errors, one per bad statement, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -224,9 +235,21 @@ fn pretty_message_translates_token_kinds() {
         expected: vec!["NUMBER".to_string(), "IDENT".to_string()],
     };
     let msg = e.pretty();
-    assert!(msg.contains("';'"), "semicolon not translated, got: {}", msg);
-    assert!(msg.contains("number"), "number not translated, got: {}", msg);
-    assert!(msg.contains("identifier"), "ident not translated, got: {}", msg);
+    assert!(
+        msg.contains("';'"),
+        "semicolon not translated, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("number"),
+        "number not translated, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("identifier"),
+        "ident not translated, got: {}",
+        msg
+    );
 }
 
 #[test]
@@ -243,7 +266,19 @@ fn recovery_error_pretty_message_is_human_readable() {
     let errors = parser.parse(&tokens).expect_err("should have parse errors");
     let msg = errors[0].pretty();
     // Message should have a location prefix and use human-readable token names (no raw ALL_CAPS).
-    assert!(msg.starts_with("["), "should start with location, got: {}", msg);
-    assert!(msg.contains("'+'"), "should translate PLUS to '+', got: {}", msg);
-    assert!(!msg.contains("PLUS"), "should not contain raw PLUS, got: {}", msg);
+    assert!(
+        msg.starts_with("["),
+        "should start with location, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("'+'"),
+        "should translate PLUS to '+', got: {}",
+        msg
+    );
+    assert!(
+        !msg.contains("PLUS"),
+        "should not contain raw PLUS, got: {}",
+        msg
+    );
 }

@@ -22,7 +22,6 @@ fn check_err(src: &str) -> SemanticError {
         .expect("at least one error")
 }
 
-
 // ── TypeRegistry ──────────────────────────────────────────────────────────────
 
 #[test]
@@ -57,7 +56,12 @@ fn registry_registers_protocol() {
 fn registry_duplicate_type_error() {
     let program = parse("type A {}\ntype A {}\n42;");
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert_eq!(err, SemanticError::DuplicateType { name: "A".to_string() });
+    assert_eq!(
+        err,
+        SemanticError::DuplicateType {
+            name: "A".to_string()
+        }
+    );
 }
 
 #[test]
@@ -71,7 +75,12 @@ fn registry_circular_inheritance_error() {
 fn registry_undefined_parent_error() {
     let program = parse("type A inherits Ghost {}\n42;");
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert_eq!(err, SemanticError::UndefinedType { name: "Ghost".to_string() });
+    assert_eq!(
+        err,
+        SemanticError::UndefinedType {
+            name: "Ghost".to_string()
+        }
+    );
 }
 
 // ── Type enum ─────────────────────────────────────────────────────────────────
@@ -136,7 +145,12 @@ fn new_arity_mismatch() {
 #[test]
 fn new_undefined_type() {
     let err = check_err("new Ghost(1);");
-    assert_eq!(err, SemanticError::UndefinedType { name: "Ghost".to_string() });
+    assert_eq!(
+        err,
+        SemanticError::UndefinedType {
+            name: "Ghost".to_string()
+        }
+    );
 }
 
 #[test]
@@ -155,7 +169,12 @@ fn type_test_valid() {
 #[test]
 fn type_test_undefined_type() {
     let err = check_err("42 is Ghost;");
-    assert_eq!(err, SemanticError::UndefinedType { name: "Ghost".to_string() });
+    assert_eq!(
+        err,
+        SemanticError::UndefinedType {
+            name: "Ghost".to_string()
+        }
+    );
 }
 
 #[test]
@@ -166,7 +185,12 @@ fn type_cast_valid() {
 #[test]
 fn type_cast_undefined_type() {
     let err = check_err("42 as Ghost;");
-    assert_eq!(err, SemanticError::UndefinedType { name: "Ghost".to_string() });
+    assert_eq!(
+        err,
+        SemanticError::UndefinedType {
+            name: "Ghost".to_string()
+        }
+    );
 }
 
 // ── Vector / Iterable ─────────────────────────────────────────────────────────
@@ -230,16 +254,12 @@ fn method_call_resolves() {
 
 #[test]
 fn type_method_body_type_error() {
-    let err = check_err(
-        "type Broken(n: Number) { bad(): Number => \"not a number\"; }\n42;",
-    );
+    let err = check_err("type Broken(n: Number) { bad(): Number => \"not a number\"; }\n42;");
     assert!(matches!(err, SemanticError::InvalidReturnType { .. }));
 }
 
 #[test]
 fn type_attribute_type_mismatch() {
-    let err = check_err(
-        "type Wrong(n: Number) { x: Number = \"hello\"; }\n42;",
-    );
+    let err = check_err("type Wrong(n: Number) { x: Number = \"hello\"; }\n42;");
     assert!(matches!(err, SemanticError::TypeMismatch { .. }));
 }

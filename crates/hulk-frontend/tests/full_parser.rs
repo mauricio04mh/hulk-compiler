@@ -1,4 +1,6 @@
-use hulk_frontend::ast::{Decl, Expr, LetBinding, Param, ProtocolMethod, Span, TypeMember, TypeRef};
+use hulk_frontend::ast::{
+    Decl, Expr, LetBinding, Param, ProtocolMethod, Span, TypeMember, TypeRef,
+};
 use hulk_frontend::parse_hulk_full_program;
 
 fn parse_ok(source: &str) -> hulk_frontend::ast::Program {
@@ -61,7 +63,12 @@ fn let_binding_multiple_with_types() {
 fn for_loop_basic() {
     let program = parse_ok("for (x in range(0, 10)) print(x);");
     match program.entry {
-        Expr::For { var, iterable, body, .. } => {
+        Expr::For {
+            var,
+            iterable,
+            body,
+            ..
+        } => {
             assert_eq!(var, "x");
             match *iterable {
                 Expr::Call { .. } => {}
@@ -107,7 +114,9 @@ fn for_loop_nested() {
 fn type_test_is_operator() {
     let program = parse_ok("x is Bird;");
     match program.entry {
-        Expr::TypeTest { expr, type_name, .. } => {
+        Expr::TypeTest {
+            expr, type_name, ..
+        } => {
             assert_eq!(*expr, Expr::Var("x".to_string(), Span::default()));
             assert_eq!(type_name, "Bird");
         }
@@ -119,7 +128,9 @@ fn type_test_is_operator() {
 fn type_cast_as_operator() {
     let program = parse_ok("x as Dog;");
     match program.entry {
-        Expr::TypeCast { expr, type_name, .. } => {
+        Expr::TypeCast {
+            expr, type_name, ..
+        } => {
             assert_eq!(*expr, Expr::Var("x".to_string(), Span::default()));
             assert_eq!(type_name, "Dog");
         }
@@ -132,7 +143,9 @@ fn is_lower_precedence_than_arithmetic() {
     // (a + b) is Number
     let program = parse_ok("a + b is Number;");
     match program.entry {
-        Expr::TypeTest { expr, type_name, .. } => {
+        Expr::TypeTest {
+            expr, type_name, ..
+        } => {
             assert!(matches!(*expr, Expr::Binary { .. }));
             assert_eq!(type_name, "Number");
         }
@@ -164,7 +177,9 @@ fn typeref_iterable_star() {
     };
     assert_eq!(
         func.params[0].ty,
-        Some(TypeRef::Iterable(Box::new(TypeRef::Simple("Number".to_string()))))
+        Some(TypeRef::Iterable(Box::new(TypeRef::Simple(
+            "Number".to_string()
+        ))))
     );
 }
 
@@ -176,13 +191,16 @@ fn typeref_vector_brackets() {
     };
     assert_eq!(
         func.params[0].ty,
-        Some(TypeRef::Vector(Box::new(TypeRef::Simple("Number".to_string()))))
+        Some(TypeRef::Vector(Box::new(TypeRef::Simple(
+            "Number".to_string()
+        ))))
     );
 }
 
 #[test]
 fn typeref_functor_type() {
-    let program = parse_ok("function apply(f: (Number) -> Boolean): Boolean => f(0);  apply((x) => x > 0);");
+    let program =
+        parse_ok("function apply(f: (Number) -> Boolean): Boolean => f(0);  apply((x) => x > 0);");
     let Decl::Function(func) = &program.declarations[0] else {
         panic!("expected function");
     };
@@ -203,7 +221,9 @@ fn return_type_vector() {
     };
     assert_eq!(
         func.return_type,
-        Some(TypeRef::Vector(Box::new(TypeRef::Simple("Number".to_string()))))
+        Some(TypeRef::Vector(Box::new(TypeRef::Simple(
+            "Number".to_string()
+        ))))
     );
 }
 
@@ -235,7 +255,12 @@ fn vector_literal_elements() {
 fn vector_generator_basic() {
     let program = parse_ok("[x | x in range(0, 5)];");
     match program.entry {
-        Expr::VectorGenerator { body, var, iterable, .. } => {
+        Expr::VectorGenerator {
+            body,
+            var,
+            iterable,
+            ..
+        } => {
             assert_eq!(var, "x");
             assert_eq!(*body, Expr::Var("x".to_string(), Span::default()));
             assert!(matches!(*iterable, Expr::Call { .. }));
@@ -396,9 +421,8 @@ fn protocol_empty() {
 
 #[test]
 fn protocol_with_methods() {
-    let program = parse_ok(
-        "protocol Hashable { hash(): Number; equals(other: Object): Boolean; }  0;",
-    );
+    let program =
+        parse_ok("protocol Hashable { hash(): Number; equals(other: Object): Boolean; }  0;");
     let Decl::Protocol(proto) = &program.declarations[0] else {
         panic!("expected Protocol declaration");
     };
@@ -419,7 +443,8 @@ fn protocol_with_methods() {
 
 #[test]
 fn protocol_with_parent() {
-    let program = parse_ok("protocol Equatable extends Hashable { equals(other: Object): Boolean; }  0;");
+    let program =
+        parse_ok("protocol Equatable extends Hashable { equals(other: Object): Boolean; }  0;");
     let Decl::Protocol(proto) = &program.declarations[0] else {
         panic!("expected Protocol declaration");
     };
@@ -430,9 +455,8 @@ fn protocol_with_parent() {
 
 #[test]
 fn multiple_protocols() {
-    let program = parse_ok(
-        "protocol A { f(): Number; }  protocol B extends A { g(): Boolean; }  0;",
-    );
+    let program =
+        parse_ok("protocol A { f(): Number; }  protocol B extends A { g(): Boolean; }  0;");
     assert_eq!(program.declarations.len(), 2);
     assert!(matches!(&program.declarations[0], Decl::Protocol(_)));
     assert!(matches!(&program.declarations[1], Decl::Protocol(_)));
@@ -468,10 +492,14 @@ fn vector_generator_with_type_test() {
 fn lambda_with_vector_return_type() {
     let program = parse_ok("(n: Number): Number[] => [n, n * 2];");
     match program.entry {
-        Expr::Lambda { return_type, body, .. } => {
+        Expr::Lambda {
+            return_type, body, ..
+        } => {
             assert_eq!(
                 return_type,
-                Some(TypeRef::Vector(Box::new(TypeRef::Simple("Number".to_string()))))
+                Some(TypeRef::Vector(Box::new(TypeRef::Simple(
+                    "Number".to_string()
+                ))))
             );
             assert!(matches!(*body, Expr::VectorLiteral(_)));
         }
@@ -505,10 +533,13 @@ fn lambda_param_with_unary_functor_type() {
     let program = parse_ok("(f: (Number) -> Boolean) => f(42);");
     match program.entry {
         Expr::Lambda { params, .. } => {
-            assert_eq!(params[0].ty, Some(TypeRef::Functor {
-                params: vec![TypeRef::Simple("Number".to_string())],
-                ret: Box::new(TypeRef::Simple("Boolean".to_string())),
-            }));
+            assert_eq!(
+                params[0].ty,
+                Some(TypeRef::Functor {
+                    params: vec![TypeRef::Simple("Number".to_string())],
+                    ret: Box::new(TypeRef::Simple("Boolean".to_string())),
+                })
+            );
         }
         other => panic!("expected Lambda, got {:?}", other),
     }
@@ -520,13 +551,16 @@ fn lambda_param_with_binary_functor_type() {
     let program = parse_ok("(f: (Number, Number) -> Number) => f(1, 2);");
     match program.entry {
         Expr::Lambda { params, .. } => {
-            assert_eq!(params[0].ty, Some(TypeRef::Functor {
-                params: vec![
-                    TypeRef::Simple("Number".to_string()),
-                    TypeRef::Simple("Number".to_string()),
-                ],
-                ret: Box::new(TypeRef::Simple("Number".to_string())),
-            }));
+            assert_eq!(
+                params[0].ty,
+                Some(TypeRef::Functor {
+                    params: vec![
+                        TypeRef::Simple("Number".to_string()),
+                        TypeRef::Simple("Number".to_string()),
+                    ],
+                    ret: Box::new(TypeRef::Simple("Number".to_string())),
+                })
+            );
         }
         other => panic!("expected Lambda, got {:?}", other),
     }
@@ -538,10 +572,13 @@ fn lambda_return_type_is_functor() {
     let program = parse_ok("(): (Number) -> Number => (x: Number) => x;");
     match program.entry {
         Expr::Lambda { return_type, .. } => {
-            assert_eq!(return_type, Some(TypeRef::Functor {
-                params: vec![TypeRef::Simple("Number".to_string())],
-                ret: Box::new(TypeRef::Simple("Number".to_string())),
-            }));
+            assert_eq!(
+                return_type,
+                Some(TypeRef::Functor {
+                    params: vec![TypeRef::Simple("Number".to_string())],
+                    ret: Box::new(TypeRef::Simple("Number".to_string())),
+                })
+            );
         }
         other => panic!("expected Lambda, got {:?}", other),
     }
@@ -578,7 +615,9 @@ fn oop_new_no_args() {
 
 #[test]
 fn oop_new_with_args() {
-    let program = parse_ok("type Point(x: Number, y: Number) { x: Number = x; y: Number = y; }  new Point(3, 4);");
+    let program = parse_ok(
+        "type Point(x: Number, y: Number) { x: Number = x; y: Number = y; }  new Point(3, 4);",
+    );
     assert_eq!(
         program.entry,
         Expr::New {
@@ -616,7 +655,12 @@ fn oop_method_call() {
 fn oop_chained_new_method() {
     let program = parse_ok("type A { get(): Number => 1; }  new A().get();");
     match program.entry {
-        Expr::MethodCall { object, method, args, .. } => {
+        Expr::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } => {
             assert_eq!(method, "get");
             assert!(args.is_empty());
             assert!(matches!(*object, Expr::New { .. }));
@@ -631,9 +675,17 @@ fn oop_self_member_access_in_method() {
     let Decl::Type(ty) = &program.declarations[0] else {
         panic!("expected type declaration");
     };
-    let method = ty.members.iter().find_map(|m| {
-        if let TypeMember::Method(method) = m { Some(method) } else { None }
-    }).expect("expected getX method");
+    let method = ty
+        .members
+        .iter()
+        .find_map(|m| {
+            if let TypeMember::Method(method) = m {
+                Some(method)
+            } else {
+                None
+            }
+        })
+        .expect("expected getX method");
     assert_eq!(
         method.body,
         Expr::MemberAccess {
@@ -650,10 +702,24 @@ fn oop_base_call_in_method() {
     let Decl::Type(ty) = &program.declarations[0] else {
         panic!("expected type declaration");
     };
-    let method = ty.members.iter().find_map(|m| {
-        if let TypeMember::Method(method) = m { Some(method) } else { None }
-    }).expect("expected get method");
-    assert_eq!(method.body, Expr::BaseCall { span: Span::default(), args: vec![] });
+    let method = ty
+        .members
+        .iter()
+        .find_map(|m| {
+            if let TypeMember::Method(method) = m {
+                Some(method)
+            } else {
+                None
+            }
+        })
+        .expect("expected get method");
+    assert_eq!(
+        method.body,
+        Expr::BaseCall {
+            span: Span::default(),
+            args: vec![]
+        }
+    );
 }
 
 #[test]

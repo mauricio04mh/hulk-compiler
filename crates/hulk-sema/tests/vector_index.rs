@@ -64,12 +64,16 @@ fn vector_index_rejects_string_index() {
 fn vector_index_reports_target_and_index_errors_when_both_invalid() {
     let errors = check_errors("42[\"bad\"];");
     assert!(
-        errors.iter().any(|e| matches!(e, SemanticError::InvalidIndexTarget { .. })),
+        errors
+            .iter()
+            .any(|e| matches!(e, SemanticError::InvalidIndexTarget { .. })),
         "expected InvalidIndexTarget, got {:?}",
         errors
     );
     assert!(
-        errors.iter().any(|e| matches!(e, SemanticError::TypeMismatch { .. })),
+        errors
+            .iter()
+            .any(|e| matches!(e, SemanticError::TypeMismatch { .. })),
         "expected TypeMismatch for index, got {:?}",
         errors
     );

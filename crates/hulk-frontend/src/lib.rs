@@ -45,7 +45,11 @@ static PIPELINE_FULL: OnceLock<Result<CachedPipeline, String>> = OnceLock::new()
 
 pub fn parse_hulk_expr_program(source: &str) -> Result<Program, FrontendError> {
     let pipeline = get_pipeline(&PIPELINE_EXPR, || {
-        build_pipeline("grammars/hulk_expr.gx", "specs/hulk_expr.lx", expr_stop_tokens())
+        build_pipeline(
+            "grammars/hulk_expr.gx",
+            "specs/hulk_expr.lx",
+            expr_stop_tokens(),
+        )
     })?;
     run_pipeline(source, pipeline)
 }
@@ -141,7 +145,10 @@ fn build_pipeline(
     let lexer_spec =
         normalize_spec(&rules).map_err(|e| FrontendError::LxNormalize(e.to_string()))?;
 
-    Ok(CachedPipeline { runtime, lexer_spec })
+    Ok(CachedPipeline {
+        runtime,
+        lexer_spec,
+    })
 }
 
 // ---------------------------------------------------------------------------

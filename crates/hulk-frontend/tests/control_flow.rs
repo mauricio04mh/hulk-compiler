@@ -70,7 +70,9 @@ fn case_c_if_with_blocks() {
 fn case_d_while_simple() {
     let program = parse_ok("while (x > 0) { print(x); x := x - 1; }");
     match program.entry {
-        Expr::While { condition, body, .. } => {
+        Expr::While {
+            condition, body, ..
+        } => {
             match *condition {
                 Expr::Binary { op, .. } => assert_eq!(op, BinaryOp::Gt),
                 other => panic!("expected gt condition, got {:?}", other),
