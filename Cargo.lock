@@ -3,9 +3,17 @@
 version = 4
 
 [[package]]
+name = "hulk-codegen-llvm"
+version = "0.1.0"
+dependencies = [
+ "hulk-ir",
+]
+
+[[package]]
 name = "hulk-driver"
 version = "0.1.0"
 dependencies = [
+ "hulk-codegen-llvm",
  "hulk-frontend",
  "hulk-lower",
  "hulk-sema",

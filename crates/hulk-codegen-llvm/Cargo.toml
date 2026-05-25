@@ -1,0 +1,8 @@
+[package]
+name = "hulk-codegen-llvm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+hulk-ir = { path = "../hulk-ir" }

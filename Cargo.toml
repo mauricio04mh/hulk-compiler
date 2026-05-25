@@ -4,6 +4,9 @@ members = [
     "crates/hulk-parsegen",
     "crates/hulk-frontend",
     "crates/hulk-sema",
+    "crates/hulk-ir",
+    "crates/hulk-lower",
+    "crates/hulk-codegen-llvm",
     "crates/hulk-driver",
 ]
 resolver = "3"
