@@ -638,8 +638,10 @@ impl<'a> FunctionEmitter<'a> {
             }
             IrTypeRef::String => {
                 let arg = self.read_value_as(&args[0], &IrTypeRef::String)?;
-                self.lines
-                    .push(format!("  call void @hulk_print_string(ptr {})", arg.operand));
+                self.lines.push(format!(
+                    "  call void @hulk_print_string(ptr {})",
+                    arg.operand
+                ));
             }
             other => {
                 return Err(LlvmCodegenError::UnsupportedOperation {
