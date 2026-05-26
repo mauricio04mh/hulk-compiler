@@ -6,7 +6,10 @@ version = 4
 name = "hulk-codegen-llvm"
 version = "0.1.0"
 dependencies = [
+ "hulk-frontend",
  "hulk-ir",
+ "hulk-lower",
+ "hulk-sema",
 ]
 
 [[package]]

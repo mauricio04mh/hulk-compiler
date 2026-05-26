@@ -81,8 +81,8 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
 
 fn lower_ir_from_source(source: &str) -> Result<IrProgram, Box<dyn Error>> {
     let program = parse_hulk_types_program(source)?;
-    let semantic =
-        analyze_program(&program).map_err(|errors| TestError(format!("semantic analysis failed: {errors:?}")))?;
+    let semantic = analyze_program(&program)
+        .map_err(|errors| TestError(format!("semantic analysis failed: {errors:?}")))?;
     let ir = lower_program(&semantic)?;
     Ok(ir)
 }
@@ -153,8 +153,7 @@ fn clang_is_available() -> bool {
 }
 
 fn runtime_source_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtime/hulk_runtime.c")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/hulk_runtime.c")
 }
 
 fn create_temp_dir(prefix: &str) -> Result<PathBuf, std::io::Error> {
@@ -226,7 +225,11 @@ fn supported_minimal_programs_execute_with_clang_when_available() {
         let stdout = compile_and_run_llvm(&llvm)
             .expect("clang availability changed during test run")
             .unwrap_or_else(|err| panic!("{} should compile and run: {err}", case.name));
-        assert_eq!(stdout, case.expected_stdout, "stdout mismatch for {}", case.name);
+        assert_eq!(
+            stdout, case.expected_stdout,
+            "stdout mismatch for {}",
+            case.name
+        );
     }
 }
 
@@ -249,6 +252,12 @@ fn unsupported_object_fails_cleanly() {
     );
     assert_unsupported_error(
         err,
-        &["unsupported", "allocate", "staticcall", "virtualcall", "getattr"],
+        &[
+            "unsupported",
+            "allocate",
+            "staticcall",
+            "virtualcall",
+            "getattr",
+        ],
     );
 }
