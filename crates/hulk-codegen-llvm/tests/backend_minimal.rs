@@ -77,6 +77,16 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         source: "print(log(4, 64));",
         expected_stdout: "3\n",
     },
+    SupportedCase {
+        name: "print string",
+        source: "print(\"Hello\");",
+        expected_stdout: "Hello\n",
+    },
+    SupportedCase {
+        name: "string literals",
+        source: "{ print(\"Hello\"); print(\"A B\"); }",
+        expected_stdout: "Hello\nA B\n",
+    },
 ];
 
 fn lower_ir_from_source(source: &str) -> Result<IrProgram, Box<dyn Error>> {
@@ -231,12 +241,6 @@ fn supported_minimal_programs_execute_with_clang_when_available() {
             case.name
         );
     }
-}
-
-#[test]
-fn unsupported_print_string_fails_cleanly() {
-    let err = codegen_error_from_source("print(\"Hello\");");
-    assert_unsupported_error(err, &["unsupported", "dataref", "string", "print"]);
 }
 
 #[test]

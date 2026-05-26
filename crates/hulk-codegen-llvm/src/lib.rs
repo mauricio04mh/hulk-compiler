@@ -1,6 +1,6 @@
 use hulk_ir::{
-    FunctionId, IrBinaryOp, IrFunction, IrInstr, IrPlace, IrProgram, IrTypeRef, IrUnaryOp, IrValue,
-    LabelId, LocalId, ParamId, TempId,
+    DataId, FunctionId, IrBinaryOp, IrData, IrDataValue, IrFunction, IrInstr, IrPlace, IrProgram,
+    IrTypeRef, IrUnaryOp, IrValue, LabelId, LocalId, ParamId, TempId,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -21,6 +21,9 @@ pub enum LlvmCodegenError {
     },
     UnknownValue {
         name: String,
+    },
+    MissingData {
+        id: DataId,
     },
     TypeMismatch {
         expected: IrTypeRef,
@@ -46,6 +49,9 @@ impl fmt::Display for LlvmCodegenError {
             LlvmCodegenError::UnsupportedOperation { message } => write!(f, "{message}"),
             LlvmCodegenError::UnknownFunction { name } => write!(f, "unknown function '{name}'"),
             LlvmCodegenError::UnknownValue { name } => write!(f, "unknown value '{name}'"),
+            LlvmCodegenError::MissingData { id } => {
+                write!(f, "IR static data #{} was not found", id.0)
+            }
             LlvmCodegenError::TypeMismatch { expected, found } => {
                 write!(f, "type mismatch: expected {expected}, found {found}")
             }
@@ -72,6 +78,7 @@ struct FunctionSig {
 struct LlvmEmitter<'a> {
     program: &'a IrProgram,
     signatures: HashMap<String, FunctionSig>,
+    data: HashMap<DataId, &'a IrData>,
 }
 
 impl<'a> LlvmEmitter<'a> {
@@ -91,9 +98,15 @@ impl<'a> LlvmEmitter<'a> {
                 },
             );
         }
+        let data = program
+            .data
+            .iter()
+            .map(|item| (item.id, item))
+            .collect::<HashMap<_, _>>();
         Self {
             program,
             signatures,
+            data,
         }
     }
 
@@ -120,15 +133,42 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare double @hulk_log(double, double)\n");
         out.push_str("declare double @hulk_pow(double, double)\n");
         out.push_str("declare double @hulk_rand()\n");
+        out.push_str("declare void @hulk_print_string(ptr)\n");
         out.push('\n');
+        self.emit_data(&mut out)?;
 
         for function in &self.program.functions {
-            FunctionEmitter::new(function, &self.signatures).emit(&mut out)?;
+            FunctionEmitter::new(function, &self.signatures, &self.data).emit(&mut out)?;
             out.push('\n');
         }
 
         self.emit_main(&mut out)?;
         Ok(out)
+    }
+
+    fn emit_data(&self, out: &mut String) -> Result<(), LlvmCodegenError> {
+        out.push_str("%HulkString = type { i64, ptr }\n\n");
+        for data in &self.program.data {
+            match &data.value {
+                IrDataValue::String(value) => {
+                    let base_name = format!("str_{}", data.id.0);
+                    let byte_name = format!("@{}_data", base_name);
+                    let desc_name = format!("@{}", base_name);
+                    let bytes = llvm_string_bytes(value.as_bytes());
+                    out.push_str(&format!(
+                        "{byte_name} = private unnamed_addr constant [{} x i8] c\"{bytes}\"\n",
+                        value.as_bytes().len() + 1
+                    ));
+                    out.push_str(&format!(
+                        "{desc_name} = private unnamed_addr constant %HulkString {{ i64 {}, ptr {byte_name} }}\n",
+                        value.as_bytes().len()
+                    ));
+                }
+                IrDataValue::Number(_) | IrDataValue::Boolean(_) => {}
+            }
+        }
+        out.push('\n');
+        Ok(())
     }
 
     fn emit_main(&self, out: &mut String) -> Result<(), LlvmCodegenError> {
@@ -156,6 +196,7 @@ impl<'a> LlvmEmitter<'a> {
 struct FunctionEmitter<'a> {
     function: &'a IrFunction,
     signatures: &'a HashMap<String, FunctionSig>,
+    data: &'a HashMap<DataId, &'a IrData>,
     local_types: HashMap<LocalId, IrTypeRef>,
     temp_types: HashMap<TempId, IrTypeRef>,
     param_types: HashMap<ParamId, IrTypeRef>,
@@ -165,7 +206,11 @@ struct FunctionEmitter<'a> {
 }
 
 impl<'a> FunctionEmitter<'a> {
-    fn new(function: &'a IrFunction, signatures: &'a HashMap<String, FunctionSig>) -> Self {
+    fn new(
+        function: &'a IrFunction,
+        signatures: &'a HashMap<String, FunctionSig>,
+        data: &'a HashMap<DataId, &'a IrData>,
+    ) -> Self {
         let local_types = function
             .locals
             .iter()
@@ -185,6 +230,7 @@ impl<'a> FunctionEmitter<'a> {
         Self {
             function,
             signatures,
+            data,
             local_types,
             temp_types,
             param_types,
@@ -590,6 +636,11 @@ impl<'a> FunctionEmitter<'a> {
                 self.lines
                     .push(format!("  call void @hulk_print_bool(i8 {widened})"));
             }
+            IrTypeRef::String => {
+                let arg = self.read_value_as(&args[0], &IrTypeRef::String)?;
+                self.lines
+                    .push(format!("  call void @hulk_print_string(ptr {})", arg.operand));
+            }
             other => {
                 return Err(LlvmCodegenError::UnsupportedOperation {
                     message: format!("print for {other} is not implemented in the minimal backend"),
@@ -795,9 +846,7 @@ impl<'a> FunctionEmitter<'a> {
                 operand: default_value(expected_ty)?,
                 ty: expected_ty.clone(),
             }),
-            IrValue::DataRef(_) => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "DataRef",
-            }),
+            IrValue::DataRef(id) => self.read_data_ref(*id, expected_ty),
         }
     }
 
@@ -831,9 +880,47 @@ impl<'a> FunctionEmitter<'a> {
             IrValue::ConstBool(_) => Ok(IrTypeRef::Boolean),
             IrValue::Null => Ok(IrTypeRef::Object),
             IrValue::Unit => Ok(IrTypeRef::Object),
-            IrValue::DataRef(_) => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "DataRef",
-            }),
+            IrValue::DataRef(id) => self.data_type(*id),
+        }
+    }
+
+    fn read_data_ref(
+        &self,
+        id: DataId,
+        expected_ty: &IrTypeRef,
+    ) -> Result<TypedOperand, LlvmCodegenError> {
+        let data = self
+            .data
+            .get(&id)
+            .ok_or(LlvmCodegenError::MissingData { id })?;
+        match &data.value {
+            IrDataValue::String(_) => {
+                self.ensure_type(expected_ty, &IrTypeRef::String)?;
+                Ok(TypedOperand {
+                    operand: format!("@str_{}", id.0),
+                    ty: IrTypeRef::String,
+                })
+            }
+            IrDataValue::Number(_) | IrDataValue::Boolean(_) => {
+                Err(LlvmCodegenError::UnsupportedInstruction {
+                    instruction: "DataRef",
+                })
+            }
+        }
+    }
+
+    fn data_type(&self, id: DataId) -> Result<IrTypeRef, LlvmCodegenError> {
+        let data = self
+            .data
+            .get(&id)
+            .ok_or(LlvmCodegenError::MissingData { id })?;
+        match &data.value {
+            IrDataValue::String(_) => Ok(IrTypeRef::String),
+            IrDataValue::Number(_) | IrDataValue::Boolean(_) => {
+                Err(LlvmCodegenError::UnsupportedInstruction {
+                    instruction: "DataRef",
+                })
+            }
         }
     }
 
@@ -946,12 +1033,21 @@ fn llvm_float(value: f64) -> String {
     }
 }
 
+fn llvm_string_bytes(bytes: &[u8]) -> String {
+    let mut escaped = String::with_capacity(bytes.len() * 4 + 4);
+    for byte in bytes {
+        escaped.push_str(&format!("\\{:02X}", byte));
+    }
+    escaped.push_str("\\00");
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use hulk_ir::{
-        FunctionId, IrBinaryOp, IrFunction, IrFunctionKind, IrInstr, IrParam, IrPlace, IrProgram,
-        IrTemp, IrTypeRef, IrValue, ParamId, TempId,
+        DataId, FunctionId, IrBinaryOp, IrData, IrDataValue, IrFunction, IrFunctionKind, IrInstr,
+        IrParam, IrPlace, IrProgram, IrTemp, IrTypeRef, IrValue, ParamId, TempId,
     };
 
     #[test]
@@ -1049,5 +1145,77 @@ mod tests {
         let llvm = emit_llvm(&program).expect("codegen should pass");
         assert!(llvm.contains("define double @id(double %p0)"));
         assert!(llvm.contains("call double @id(double 4.0)"));
+    }
+
+    #[test]
+    fn emits_static_string_data_and_print_string() {
+        let program = IrProgram {
+            types: vec![],
+            data: vec![IrData {
+                id: DataId(0),
+                value: IrDataValue::String("Hello".to_string()),
+            }],
+            functions: vec![IrFunction {
+                id: FunctionId(0),
+                name: "entry".to_string(),
+                kind: IrFunctionKind::Entry,
+                params: vec![],
+                locals: vec![],
+                temps: vec![IrTemp {
+                    id: TempId(0),
+                    ty: IrTypeRef::Object,
+                }],
+                return_type: IrTypeRef::Object,
+                body: vec![
+                    IrInstr::Call {
+                        dst: Some(IrPlace::Temp(TempId(0))),
+                        function: "print".to_string(),
+                        args: vec![IrValue::DataRef(DataId(0))],
+                    },
+                    IrInstr::Return(Some(IrValue::Temp(TempId(0)))),
+                ],
+            }],
+            entry: FunctionId(0),
+        };
+
+        let llvm = emit_llvm(&program).expect("codegen should pass");
+        assert!(llvm.contains("%HulkString = type { i64, ptr }"));
+        assert!(llvm.contains("@str_0_data = private unnamed_addr constant [6 x i8]"));
+        assert!(llvm.contains("call void @hulk_print_string(ptr @str_0)"));
+    }
+
+    #[test]
+    fn escapes_string_bytes_in_global_data() {
+        let program = IrProgram {
+            types: vec![],
+            data: vec![IrData {
+                id: DataId(0),
+                value: IrDataValue::String("A\nB".to_string()),
+            }],
+            functions: vec![IrFunction {
+                id: FunctionId(0),
+                name: "entry".to_string(),
+                kind: IrFunctionKind::Entry,
+                params: vec![],
+                locals: vec![],
+                temps: vec![IrTemp {
+                    id: TempId(0),
+                    ty: IrTypeRef::Object,
+                }],
+                return_type: IrTypeRef::Object,
+                body: vec![
+                    IrInstr::Call {
+                        dst: Some(IrPlace::Temp(TempId(0))),
+                        function: "print".to_string(),
+                        args: vec![IrValue::DataRef(DataId(0))],
+                    },
+                    IrInstr::Return(Some(IrValue::Temp(TempId(0)))),
+                ],
+            }],
+            entry: FunctionId(0),
+        };
+
+        let llvm = emit_llvm(&program).expect("codegen should pass");
+        assert!(llvm.contains("\\41\\0A\\42\\00"));
     }
 }

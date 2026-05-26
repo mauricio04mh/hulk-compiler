@@ -87,8 +87,9 @@ For this subset:
 - `print(Boolean)` calls `hulk_print_bool`;
 - math builtins call runtime wrappers or LLVM/libm-compatible functions.
 
-Strings, vectors, objects, virtual dispatch, closures, and type operations can
-be added after the minimum backend emits valid LLVM and runs simple programs.
+Static string literals and `print(String)` are supported in the current phase.
+Vectors, objects, virtual dispatch, closures, and type operations can be added
+after the minimum backend emits valid LLVM and runs simple programs.
 
 ## Function ABI
 
@@ -187,7 +188,7 @@ HULK builtin call        Runtime function
 print(Number)           void @hulk_print_number(double)
 print(Boolean)          void @hulk_print_bool(i8)
 print(String)           void @hulk_print_string(ptr)
-print(Object/User)      void @hulk_print_object(ptr)
+print(Object/User)      not implemented yet
 sqrt(Number)            double @hulk_sqrt(double)
 sin(Number)             double @hulk_sin(double)
 cos(Number)             double @hulk_cos(double)
@@ -207,13 +208,12 @@ Minimum C declarations:
 void hulk_print_number(double value);
 void hulk_print_bool(unsigned char value);
 void hulk_print_string(struct HulkString* value);
-void hulk_print_object(struct HulkObject* value);
 
 double hulk_sqrt(double value);
 double hulk_sin(double value);
 double hulk_cos(double value);
 double hulk_exp(double value);
-double hulk_log(double value, double base);
+double hulk_log(double base, double value);
 double hulk_rand(void);
 ```
 
@@ -226,8 +226,8 @@ directly.
 descriptor:
 
 ```llvm
-@str_0_data = private constant [6 x i8] c"hello\00"
-@str_0 = global %HulkString { i64 5, ptr @str_0_data }
+@str_0_data = private unnamed_addr constant [6 x i8] c"hello\00"
+@str_0 = private unnamed_addr constant %HulkString { i64 5, ptr @str_0_data }
 ```
 
 Generated uses of `@s0` become a pointer to the descriptor, not a pointer to the
@@ -240,29 +240,20 @@ Runtime representation:
 ```c
 typedef struct HulkString {
     long long len;
-    char* data;
+    const char* data;
 } HulkString;
 ```
 
-Required operations:
+For the current backend phase, the runtime only needs printing support for
+static string literals:
 
 ```c
-HulkString* hulk_string_new(const char* data, long long len);
-HulkString* hulk_string_concat(HulkString* left, HulkString* right);
-HulkString* hulk_string_concat_space(HulkString* left, HulkString* right);
-unsigned char hulk_string_eq(HulkString* left, HulkString* right);
+void hulk_print_string(HulkString* value);
 ```
 
-IR binary ops map as follows:
-
-```text
-Concat       -> hulk_string_concat
-ConcatSpace  -> hulk_string_concat_space
-Eq/Neq       -> hulk_string_eq plus optional inversion
-```
-
-The runtime owns heap strings it creates. Static strings are immutable and do
-not need to be freed in the first implementation.
+Static strings are immutable and do not need to be freed in the first
+implementation. Concatenation, equality, and heap string allocation remain
+future work.
 
 ## Object ABI
 

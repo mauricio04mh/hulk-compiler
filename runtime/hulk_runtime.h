@@ -1,8 +1,16 @@
 #ifndef HULK_RUNTIME_H
 #define HULK_RUNTIME_H
 
+#include <stddef.h>
+
+typedef struct HulkString {
+    long long len;
+    const char* data;
+} HulkString;
+
 void hulk_print_number(double value);
 void hulk_print_bool(unsigned char value);
+void hulk_print_string(HulkString* value);
 
 double hulk_sqrt(double value);
 double hulk_sin(double value);

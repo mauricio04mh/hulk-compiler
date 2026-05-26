@@ -12,6 +12,16 @@ void hulk_print_bool(unsigned char value) {
     printf("%s\n", value ? "true" : "false");
 }
 
+void hulk_print_string(HulkString* value) {
+    if (value == NULL || value->data == NULL) {
+        puts("<null>");
+        return;
+    }
+
+    fwrite(value->data, 1, (size_t)value->len, stdout);
+    putchar('\n');
+}
+
 double hulk_sqrt(double value) {
     return sqrt(value);
 }
