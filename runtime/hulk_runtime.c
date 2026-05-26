@@ -28,7 +28,7 @@ double hulk_exp(double value) {
     return exp(value);
 }
 
-double hulk_log(double value, double base) {
+double hulk_log(double base, double value) {
     return log(value) / log(base);
 }
 

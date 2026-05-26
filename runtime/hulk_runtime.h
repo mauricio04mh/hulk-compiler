@@ -8,7 +8,7 @@ double hulk_sqrt(double value);
 double hulk_sin(double value);
 double hulk_cos(double value);
 double hulk_exp(double value);
-double hulk_log(double value, double base);
+double hulk_log(double base, double value);
 double hulk_pow(double value, double exponent);
 double hulk_rand(void);
 
