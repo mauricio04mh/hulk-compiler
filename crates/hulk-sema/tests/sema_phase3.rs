@@ -63,21 +63,30 @@ fn attr_access_in_child_via_self_parent_attr_fails() {
 fn cannot_inherit_from_number() {
     let program = parse("type MyNum inherits Number {}\n42;");
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::CannotInheritFromPrimitive { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::CannotInheritFromPrimitive { .. }
+    ));
 }
 
 #[test]
 fn cannot_inherit_from_string() {
     let program = parse("type MyStr inherits String {}\n42;");
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::CannotInheritFromPrimitive { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::CannotInheritFromPrimitive { .. }
+    ));
 }
 
 #[test]
 fn cannot_inherit_from_boolean() {
     let program = parse("type MyBool inherits Boolean {}\n42;");
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::CannotInheritFromPrimitive { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::CannotInheritFromPrimitive { .. }
+    ));
 }
 
 // ── Protocol variance checks (G3) ─────────────────────────────────────────────
@@ -90,7 +99,10 @@ fn protocol_return_type_mismatch() {
          42;",
     );
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::ProtocolReturnTypeMismatch { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::ProtocolReturnTypeMismatch { .. }
+    ));
 }
 
 #[test]
@@ -101,7 +113,10 @@ fn protocol_param_type_mismatch() {
          42;",
     );
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::ProtocolParamTypeMismatch { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::ProtocolParamTypeMismatch { .. }
+    ));
 }
 
 #[test]
@@ -124,7 +139,10 @@ fn method_override_arity_mismatch() {
          42;",
     );
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::MethodOverrideSignatureMismatch { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::MethodOverrideSignatureMismatch { .. }
+    ));
 }
 
 #[test]
@@ -135,7 +153,24 @@ fn method_override_return_type_mismatch() {
          42;",
     );
     let err = TypeRegistry::build(&program).expect_err("should fail");
-    assert!(matches!(err, SemanticError::MethodOverrideSignatureMismatch { .. }));
+    assert!(matches!(
+        err,
+        SemanticError::MethodOverrideSignatureMismatch { .. }
+    ));
+}
+
+#[test]
+fn method_override_param_type_mismatch() {
+    let program = parse(
+        "type A { f(x: Number): Number => x; }\n\
+         type B inherits A() { f(x: String): String => x; }\n\
+         let b = new B() in b.f(\"x\");",
+    );
+    let err = TypeRegistry::build(&program).expect_err("should fail");
+    assert!(matches!(
+        err,
+        SemanticError::MethodOverrideSignatureMismatch { .. }
+    ));
 }
 
 #[test]
@@ -166,6 +201,19 @@ fn base_in_method_arity_mismatch() {
          new Dog().speak();",
     );
     assert!(matches!(err, SemanticError::ArityMismatch { .. }));
+}
+
+#[test]
+fn assign_self_is_invalid() {
+    let err = check_err(
+        "type A {
+             f(): A {
+                 self := new A();
+             }
+         }
+         let a = new A() in a.f();",
+    );
+    assert!(matches!(err, SemanticError::InvalidAssignmentTarget));
 }
 
 // ── Implicit protocol conformance (G6) ────────────────────────────────────────

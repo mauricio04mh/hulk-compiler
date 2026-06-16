@@ -17,8 +17,14 @@ fn case_a_function_inline() {
     assert_eq!(func.name, "square");
     assert_eq!(func.params.len(), 1);
     assert_eq!(func.params[0].name, "x");
-    assert_eq!(func.params[0].ty, Some(TypeRef::Simple("Number".to_string())));
-    assert_eq!(func.return_type, Some(TypeRef::Simple("Number".to_string())));
+    assert_eq!(
+        func.params[0].ty,
+        Some(TypeRef::Simple("Number".to_string()))
+    );
+    assert_eq!(
+        func.return_type,
+        Some(TypeRef::Simple("Number".to_string()))
+    );
     assert_eq!(
         func.body,
         Expr::Binary {
@@ -118,8 +124,9 @@ fn case_h_invalid_missing_rbrace() {
 #[test]
 fn recovery_param_bad_type_annotation_reports_one_error() {
     // `x: 42` — number where a type IDENT is expected; `y` should still parse.
-    let err = parse_hulk_functions_program("function f(x: 42, y: Number): Number => y;\n\nf(1, 2);")
-        .expect_err("should fail due to invalid type annotation");
+    let err =
+        parse_hulk_functions_program("function f(x: 42, y: Number): Number => y;\n\nf(1, 2);")
+            .expect_err("should fail due to invalid type annotation");
     let FrontendError::ParseErrors(list) = err else {
         panic!("expected ParseErrors");
     };
@@ -134,10 +141,8 @@ fn recovery_param_bad_type_annotation_reports_one_error() {
 #[test]
 fn recovery_two_bad_params_report_two_errors() {
     // Both `x: 42` and `y: 99` have invalid type annotations.
-    let err = parse_hulk_functions_program(
-        "function f(x: 42, y: 99): Number => 0;\n\nf(1, 2);",
-    )
-    .expect_err("should fail");
+    let err = parse_hulk_functions_program("function f(x: 42, y: 99): Number => 0;\n\nf(1, 2);")
+        .expect_err("should fail");
     let FrontendError::ParseErrors(list) = err else {
         panic!("expected ParseErrors");
     };

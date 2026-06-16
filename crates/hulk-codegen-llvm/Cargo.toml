@@ -1,0 +1,13 @@
+[package]
+name = "hulk-codegen-llvm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+hulk-ir = { path = "../hulk-ir" }
+
+[dev-dependencies]
+hulk-frontend = { path = "../hulk-frontend" }
+hulk-lower = { path = "../hulk-lower" }
+hulk-sema = { path = "../hulk-sema" }

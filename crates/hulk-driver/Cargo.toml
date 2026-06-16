@@ -9,5 +9,7 @@ name = "hulkc"
 path = "src/main.rs"
 
 [dependencies]
+hulk-codegen-llvm = { path = "../hulk-codegen-llvm" }
 hulk-frontend = { path = "../hulk-frontend" }
+hulk-lower    = { path = "../hulk-lower" }
 hulk-sema      = { path = "../hulk-sema" }

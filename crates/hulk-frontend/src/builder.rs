@@ -701,10 +701,11 @@ impl AstBuilder {
                             location: AstError::no_location(),
                         });
                     }
-                    let ret_type_node = ret_children.first().ok_or_else(|| AstError::MissingChild {
-                        node: "TypeFunctorReturn".to_string(),
-                        location: AstError::no_location(),
-                    })?;
+                    let ret_type_node =
+                        ret_children.first().ok_or_else(|| AstError::MissingChild {
+                            node: "TypeFunctorReturn".to_string(),
+                            location: AstError::no_location(),
+                        })?;
                     let ret = Self::build_typeref_from_pratt_node(ret_type_node)?;
 
                     let params = children[..children.len() - 1]
@@ -754,7 +755,11 @@ impl AstBuilder {
 
     fn build_expr(cst: &CstNode) -> Result<Expr, AstError> {
         match cst {
-            CstNode::Error { message, line, column } => Err(AstError::UnsupportedConstruct {
+            CstNode::Error {
+                message,
+                line,
+                column,
+            } => Err(AstError::UnsupportedConstruct {
                 message: message.clone(),
                 location: AstError::at(*line, *column),
             }),
@@ -819,7 +824,11 @@ impl AstBuilder {
             args.push(Self::build_expr(arg)?);
         }
 
-        Ok(Expr::New { span, type_name, args })
+        Ok(Expr::New {
+            span,
+            type_name,
+            args,
+        })
     }
 
     fn build_base_call_expr(cst: &CstNode) -> Result<Expr, AstError> {
@@ -1550,7 +1559,11 @@ fn as_node(cst: &CstNode) -> Result<(&str, &[CstNode]), AstError> {
             kind: kind.clone(),
             location: AstError::at(*line, *column),
         }),
-        CstNode::Error { message, line, column } => Err(AstError::UnsupportedConstruct {
+        CstNode::Error {
+            message,
+            line,
+            column,
+        } => Err(AstError::UnsupportedConstruct {
             message: message.clone(),
             location: AstError::at(*line, *column),
         }),
@@ -1582,10 +1595,7 @@ fn token_if_kind<'a>(cst: &'a CstNode, expected_kind: &str) -> Option<&'a str> {
     None
 }
 
-fn token_if_kind_with_span<'a>(
-    cst: &'a CstNode,
-    expected_kind: &str,
-) -> Option<(&'a str, Span)> {
+fn token_if_kind_with_span<'a>(cst: &'a CstNode, expected_kind: &str) -> Option<(&'a str, Span)> {
     if let CstNode::Token {
         kind,
         lexeme,
@@ -1609,7 +1619,11 @@ fn as_token_meta(cst: &CstNode) -> Result<(&str, usize, usize), AstError> {
             name: name.clone(),
             location: AstError::no_location(),
         }),
-        CstNode::Error { message, line, column } => Err(AstError::UnsupportedConstruct {
+        CstNode::Error {
+            message,
+            line,
+            column,
+        } => Err(AstError::UnsupportedConstruct {
             message: message.clone(),
             location: AstError::at(*line, *column),
         }),
