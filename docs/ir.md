@@ -249,7 +249,7 @@ Supported binary ops:
 
 ```text
 Add, Sub, Mul, Div, Mod, Pow,
-Concat, ConcatSpace,
+Concat,
 Eq, Neq, Lt, Le, Gt, Ge,
 And, Or
 ```
@@ -257,6 +257,22 @@ And, Or
 Backends must map each operation according to the operand types produced by
 semantic analysis. For example, numeric `Add` and string concatenation are not
 the same runtime operation even though both are binary instructions.
+
+`Concat` is the normal IR operation for string concatenation. Source HULK `@`
+lowers directly to one `IrBinaryOp::Concat`.
+
+Source HULK `@@` is normalized before backend code generation as:
+
+```text
+tmp = left @ " "
+result = tmp @ right
+```
+
+The lowering inserts an `IrDataValue::String(" ")` for the separator and emits
+two `IrBinaryOp::Concat` instructions. Normal source lowering must not emit
+`IrBinaryOp::ConcatSpace`; that enum variant is kept only for compatibility or
+fallback paths. An incremental LLVM backend only needs to implement
+`IrBinaryOp::Concat` to cover both source `@` and source `@@`.
 
 ### Control Flow
 

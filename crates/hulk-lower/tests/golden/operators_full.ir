@@ -5,7 +5,8 @@
 data @s0 = "hello"
 data @s1 = "world"
 data @s2 = "hello"
-data @s3 = "world"
+data @s3 = " "
+data @s4 = "world"
 
 .CODE
 entry #0
@@ -21,21 +22,22 @@ function entry #0 -> Object {
   temp %t8: String
   temp %t9: Object
   temp %t10: String
-  temp %t11: Object
-  temp %t12: Boolean
-  temp %t13: Object
-  temp %t14: Boolean
-  temp %t15: Object
-  temp %t16: Boolean
-  temp %t17: Object
-  temp %t18: Boolean
-  temp %t19: Object
-  temp %t20: Boolean
-  temp %t21: Object
-  temp %t22: Boolean
-  temp %t23: Object
-  temp %t24: Boolean
-  temp %t25: Object
+  temp %t11: String
+  temp %t12: Object
+  temp %t13: Boolean
+  temp %t14: Object
+  temp %t15: Boolean
+  temp %t16: Object
+  temp %t17: Boolean
+  temp %t18: Object
+  temp %t19: Boolean
+  temp %t20: Object
+  temp %t21: Boolean
+  temp %t22: Object
+  temp %t23: Boolean
+  temp %t24: Object
+  temp %t25: Boolean
+  temp %t26: Object
 
   %t0 = 10 - 3
   %t1 = call print(%t0)
@@ -47,21 +49,22 @@ function entry #0 -> Object {
   %t7 = call print(%t6)
   %t8 = @s0 @ @s1
   %t9 = call print(%t8)
-  %t10 = @s2 @@ @s3
-  %t11 = call print(%t10)
-  %t12 = true & false
-  %t13 = call print(%t12)
-  %t14 = true | false
-  %t15 = call print(%t14)
-  %t16 = !false
-  %t17 = call print(%t16)
-  %t18 = 1 <= 2
-  %t19 = call print(%t18)
-  %t20 = 1 >= 2
-  %t21 = call print(%t20)
-  %t22 = 1 == 1
-  %t23 = call print(%t22)
-  %t24 = 1 != 2
-  %t25 = call print(%t24)
-  return %t25
+  %t10 = @s2 @ @s3
+  %t11 = %t10 @ @s4
+  %t12 = call print(%t11)
+  %t13 = true & false
+  %t14 = call print(%t13)
+  %t15 = true | false
+  %t16 = call print(%t15)
+  %t17 = !false
+  %t18 = call print(%t17)
+  %t19 = 1 <= 2
+  %t20 = call print(%t19)
+  %t21 = 1 >= 2
+  %t22 = call print(%t21)
+  %t23 = 1 == 1
+  %t24 = call print(%t23)
+  %t25 = 1 != 2
+  %t26 = call print(%t25)
+  return %t26
 }
