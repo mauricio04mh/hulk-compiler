@@ -87,9 +87,10 @@ For this subset:
 - `print(Boolean)` calls `hulk_print_bool`;
 - math builtins call runtime wrappers or LLVM/libm-compatible functions.
 
-Static string literals and `print(String)` are supported in the current phase.
-Vectors, objects, virtual dispatch, closures, and type operations can be added
-after the minimum backend emits valid LLVM and runs simple programs.
+Static string literals, `print(String)`, and string concatenation are supported
+in the current phase. Vectors, objects, virtual dispatch, closures, and type
+operations can be added after the minimum backend emits valid LLVM and runs
+simple programs.
 
 ## Function ABI
 
@@ -188,6 +189,8 @@ HULK builtin call        Runtime function
 print(Number)           void @hulk_print_number(double)
 print(Boolean)          void @hulk_print_bool(i8)
 print(String)           void @hulk_print_string(ptr)
+Concat                  ptr @hulk_string_concat(ptr, ptr)
+ConcatSpace             ptr @hulk_string_concat_space(ptr, ptr)
 print(Object/User)      not implemented yet
 sqrt(Number)            double @hulk_sqrt(double)
 sin(Number)             double @hulk_sin(double)
@@ -208,6 +211,8 @@ Minimum C declarations:
 void hulk_print_number(double value);
 void hulk_print_bool(unsigned char value);
 void hulk_print_string(struct HulkString* value);
+struct HulkString* hulk_string_concat(struct HulkString* left, struct HulkString* right);
+struct HulkString* hulk_string_concat_space(struct HulkString* left, struct HulkString* right);
 
 double hulk_sqrt(double value);
 double hulk_sin(double value);
@@ -252,8 +257,8 @@ void hulk_print_string(HulkString* value);
 ```
 
 Static strings are immutable and do not need to be freed in the first
-implementation. Concatenation, equality, and heap string allocation remain
-future work.
+implementation. Concatenation results are heap allocated, but there is no GC or
+free strategy yet. Equality remains future work.
 
 ## Object ABI
 

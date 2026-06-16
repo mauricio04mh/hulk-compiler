@@ -11,6 +11,8 @@ typedef struct HulkString {
 void hulk_print_number(double value);
 void hulk_print_bool(unsigned char value);
 void hulk_print_string(HulkString* value);
+HulkString* hulk_string_concat(HulkString* left, HulkString* right);
+HulkString* hulk_string_concat_space(HulkString* left, HulkString* right);
 
 double hulk_sqrt(double value);
 double hulk_sin(double value);

@@ -87,6 +87,26 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         source: "{ print(\"Hello\"); print(\"A B\"); }",
         expected_stdout: "Hello\nA B\n",
     },
+    SupportedCase {
+        name: "string concat",
+        source: "print(\"Hello\" @ \"World\");",
+        expected_stdout: "HelloWorld\n",
+    },
+    SupportedCase {
+        name: "string concat space",
+        source: "print(\"Hello\" @@ \"World\");",
+        expected_stdout: "Hello World\n",
+    },
+    SupportedCase {
+        name: "string concat chained",
+        source: "print(\"A\" @ \"B\" @ \"C\");",
+        expected_stdout: "ABC\n",
+    },
+    SupportedCase {
+        name: "string concat with values",
+        source: "let x = \"Hello\" in let y = \"World\" in print(x @@ y);",
+        expected_stdout: "Hello World\n",
+    },
 ];
 
 fn lower_ir_from_source(source: &str) -> Result<IrProgram, Box<dyn Error>> {

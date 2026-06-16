@@ -133,6 +133,8 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare double @hulk_log(double, double)\n");
         out.push_str("declare double @hulk_pow(double, double)\n");
         out.push_str("declare double @hulk_rand()\n");
+        out.push_str("declare ptr @hulk_string_concat(ptr, ptr)\n");
+        out.push_str("declare ptr @hulk_string_concat_space(ptr, ptr)\n");
         out.push_str("declare void @hulk_print_string(ptr)\n");
         out.push('\n');
         self.emit_data(&mut out)?;
@@ -434,11 +436,8 @@ impl<'a> FunctionEmitter<'a> {
             IrBinaryOp::And | IrBinaryOp::Or => {
                 self.emit_bool_binary(dst, op, left, right, &dst_ty)
             }
-            IrBinaryOp::Concat | IrBinaryOp::ConcatSpace => {
-                Err(LlvmCodegenError::UnsupportedInstruction {
-                    instruction: "StringConcat",
-                })
-            }
+            IrBinaryOp::Concat => self.emit_string_concat(dst, left, right, &dst_ty, false),
+            IrBinaryOp::ConcatSpace => self.emit_string_concat(dst, left, right, &dst_ty, true),
         }
     }
 
@@ -592,6 +591,36 @@ impl<'a> FunctionEmitter<'a> {
             left.operand, right.operand
         ));
         self.store_operand(dst, dst_ty, &name)
+    }
+
+    fn emit_string_concat(
+        &mut self,
+        dst: IrPlace,
+        left: &IrValue,
+        right: &IrValue,
+        dst_ty: &IrTypeRef,
+        with_space: bool,
+    ) -> Result<(), LlvmCodegenError> {
+        if *dst_ty != IrTypeRef::String {
+            return Err(LlvmCodegenError::TypeMismatch {
+                expected: IrTypeRef::String,
+                found: dst_ty.clone(),
+            });
+        }
+
+        let left = self.read_value_as(left, &IrTypeRef::String)?;
+        let right = self.read_value_as(right, &IrTypeRef::String)?;
+        let name = self.next_name("str");
+        let runtime_name = if with_space {
+            "hulk_string_concat_space"
+        } else {
+            "hulk_string_concat"
+        };
+        self.lines.push(format!(
+            "  {name} = call ptr @{runtime_name}(ptr {}, ptr {})",
+            left.operand, right.operand
+        ));
+        self.store_operand(dst, &IrTypeRef::String, &name)
     }
 
     fn emit_call(
@@ -1219,5 +1248,62 @@ mod tests {
 
         let llvm = emit_llvm(&program).expect("codegen should pass");
         assert!(llvm.contains("\\41\\0A\\42\\00"));
+    }
+
+    #[test]
+    fn emits_string_concat_runtime_calls() {
+        let program = IrProgram {
+            types: vec![],
+            data: vec![
+                IrData {
+                    id: DataId(0),
+                    value: IrDataValue::String("A".to_string()),
+                },
+                IrData {
+                    id: DataId(1),
+                    value: IrDataValue::String("B".to_string()),
+                },
+            ],
+            functions: vec![IrFunction {
+                id: FunctionId(0),
+                name: "entry".to_string(),
+                kind: IrFunctionKind::Entry,
+                params: vec![],
+                locals: vec![],
+                temps: vec![
+                    IrTemp {
+                        id: TempId(0),
+                        ty: IrTypeRef::String,
+                    },
+                    IrTemp {
+                        id: TempId(1),
+                        ty: IrTypeRef::String,
+                    },
+                ],
+                return_type: IrTypeRef::String,
+                body: vec![
+                    IrInstr::Binary {
+                        dst: IrPlace::Temp(TempId(0)),
+                        op: IrBinaryOp::Concat,
+                        left: IrValue::DataRef(DataId(0)),
+                        right: IrValue::DataRef(DataId(1)),
+                    },
+                    IrInstr::Binary {
+                        dst: IrPlace::Temp(TempId(1)),
+                        op: IrBinaryOp::ConcatSpace,
+                        left: IrValue::Temp(TempId(0)),
+                        right: IrValue::DataRef(DataId(1)),
+                    },
+                    IrInstr::Return(Some(IrValue::Temp(TempId(1)))),
+                ],
+            }],
+            entry: FunctionId(0),
+        };
+
+        let llvm = emit_llvm(&program).expect("codegen should pass");
+        assert!(llvm.contains("declare ptr @hulk_string_concat(ptr, ptr)"));
+        assert!(llvm.contains("declare ptr @hulk_string_concat_space(ptr, ptr)"));
+        assert!(llvm.contains("call ptr @hulk_string_concat("));
+        assert!(llvm.contains("call ptr @hulk_string_concat_space("));
     }
 }
