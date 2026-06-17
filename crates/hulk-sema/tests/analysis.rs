@@ -472,7 +472,7 @@ fn migrated_check_program_reports_invalid_condition_type() {
 
 #[test]
 fn migrated_check_program_reports_cannot_infer_parameter_type() {
-    assert_analysis_and_check_error("function f(x) => x;\nf(1);", |error| {
+    assert_analysis_and_check_error("function f(x) => x;\n1;", |error| {
         matches!(error, SemanticError::CannotInferParameterType { function, parameter }
             if function == "f" && parameter == "x")
     });

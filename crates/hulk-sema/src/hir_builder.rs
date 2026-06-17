@@ -22,6 +22,12 @@ pub struct SymbolInfo {
     pub kind: SymbolKind,
 }
 
+struct PassResult {
+    semantic: SemanticProgram,
+    signature_changed: bool,
+    functions: HashMap<String, FunctionType>,
+}
+
 #[derive(Debug, Clone)]
 pub enum SymbolKind {
     Local,
@@ -40,6 +46,8 @@ pub struct HirBuilder {
     current_method: Option<String>,
     current_function: Option<String>,
     current_function_param_indices: HashMap<SymbolId, usize>,
+    report_unresolved_parameter_errors: bool,
+    signature_changed: bool,
     next_hir_id: u32,
     next_symbol_id: u32,
 }
@@ -56,15 +64,42 @@ impl HirBuilder {
             current_method: None,
             current_function: None,
             current_function_param_indices: HashMap::new(),
+            report_unresolved_parameter_errors: false,
+            signature_changed: false,
             next_hir_id: 0,
             next_symbol_id: 0,
         }
     }
 
-    pub fn analyze_program(
+    pub fn analyze_program(self, program: &Program) -> Result<SemanticProgram, Vec<SemanticError>> {
+        let mut functions = HashMap::new();
+
+        loop {
+            let mut pass_builder = HirBuilder::new(self.registry.clone());
+            pass_builder.functions = functions.clone();
+            let result = pass_builder.run_pass(program, false)?;
+
+            if result.signature_changed {
+                functions = result.functions;
+                continue;
+            }
+
+            let mut final_builder = HirBuilder::new(self.registry.clone());
+            final_builder.functions = result.functions;
+            return final_builder
+                .run_pass(program, true)
+                .map(|result| result.semantic);
+        }
+    }
+
+    fn run_pass(
         mut self,
         program: &Program,
-    ) -> Result<SemanticProgram, Vec<SemanticError>> {
+        report_unresolved_parameter_errors: bool,
+    ) -> Result<PassResult, Vec<SemanticError>> {
+        self.report_unresolved_parameter_errors = report_unresolved_parameter_errors;
+        self.signature_changed = false;
+
         self.register_builtin_constants();
         self.register_builtin_functions();
 
@@ -92,12 +127,16 @@ impl HirBuilder {
         let entry = self.analyze_expr(&program.entry);
 
         if self.errors.is_empty() {
-            Ok(SemanticProgram {
-                hir: HirProgram {
-                    declarations,
-                    entry,
+            Ok(PassResult {
+                semantic: SemanticProgram {
+                    hir: HirProgram {
+                        declarations,
+                        entry,
+                    },
+                    registry: self.registry,
+                    functions: self.functions.clone(),
                 },
-                registry: self.registry,
+                signature_changed: self.signature_changed,
                 functions: self.functions,
             })
         } else {
@@ -176,11 +215,7 @@ impl HirBuilder {
             .unwrap_or(Type::Unknown);
 
         if current_ty == Type::Unknown {
-            if let Some(signature) = self.functions.get_mut(&current_function) {
-                if idx < signature.params.len() {
-                    signature.params[idx] = expected.clone();
-                }
-            }
+            self.refine_function_param_type(&current_function, idx, expected);
             if let Some(symbol_mut) = self.resolve_symbol_mut(name) {
                 symbol_mut.ty = expected.clone();
             }
@@ -190,6 +225,32 @@ impl HirBuilder {
         if current_ty != *expected {
             self.errors.push(SemanticError::TypeMismatch {
                 expected: current_ty,
+                found: expected.clone(),
+            });
+        }
+    }
+
+    fn refine_function_param_type(&mut self, function: &str, idx: usize, expected: &Type) {
+        if *expected == Type::Unknown {
+            return;
+        }
+
+        let Some(signature) = self.functions.get_mut(function) else {
+            return;
+        };
+        let Some(current) = signature.params.get(idx).cloned() else {
+            return;
+        };
+
+        if current == Type::Unknown {
+            signature.params[idx] = expected.clone();
+            self.signature_changed = true;
+            return;
+        }
+
+        if current != *expected {
+            self.errors.push(SemanticError::TypeMismatch {
+                expected: current,
                 found: expected.clone(),
             });
         }
@@ -235,19 +296,23 @@ impl HirBuilder {
     }
 
     fn register_function_signature(&mut self, func: &FunctionDecl) {
+        let existing = self.functions.get(&func.name).cloned();
         let params = func
             .params
             .iter()
-            .map(|param| {
-                param
-                    .ty
-                    .as_ref()
-                    .map(Type::from_type_ref)
-                    .map(|ty| {
-                        self.validate_user_type(&ty);
-                        ty
-                    })
-                    .unwrap_or(Type::Unknown)
+            .enumerate()
+            .map(|(idx, param)| {
+                if let Some(ty_ref) = &param.ty {
+                    let ty = Type::from_type_ref(ty_ref);
+                    self.validate_user_type(&ty);
+                    ty
+                } else {
+                    existing
+                        .as_ref()
+                        .and_then(|signature| signature.params.get(idx))
+                        .cloned()
+                        .unwrap_or(Type::Unknown)
+                }
             })
             .collect();
 
@@ -256,7 +321,9 @@ impl HirBuilder {
             self.validate_user_type(&ty);
             ty
         } else {
-            Type::Unknown
+            existing
+                .map(|signature| signature.return_type)
+                .unwrap_or(Type::Unknown)
         };
 
         self.functions.insert(
@@ -299,7 +366,7 @@ impl HirBuilder {
             if let Some(symbol) = self.resolve_symbol(&param.name) {
                 param.ty = symbol.ty.clone();
             }
-            if param.ty == Type::Unknown {
+            if param.ty == Type::Unknown && self.report_unresolved_parameter_errors {
                 self.errors.push(SemanticError::CannotInferParameterType {
                     function: func.name.clone(),
                     parameter: param.name.clone(),
@@ -321,10 +388,23 @@ impl HirBuilder {
             }
             declared
         } else {
-            if let Some(sig) = self.functions.get_mut(&func.name) {
-                sig.return_type = body.ty.clone();
+            if body.ty != Type::Unknown {
+                let previous = self
+                    .functions
+                    .get(&func.name)
+                    .map(|sig| sig.return_type.clone())
+                    .unwrap_or(Type::Unknown);
+                if previous != body.ty {
+                    self.signature_changed = true;
+                }
+                if let Some(sig) = self.functions.get_mut(&func.name) {
+                    sig.return_type = body.ty.clone();
+                }
             }
-            body.ty.clone()
+            self.functions
+                .get(&func.name)
+                .map(|sig| sig.return_type.clone())
+                .unwrap_or_else(|| body.ty.clone())
         };
 
         HirFunctionDecl {
@@ -1771,7 +1851,7 @@ impl HirBuilder {
         };
 
         if let Some(signature) = self.functions.get(name).cloned() {
-            let hir_args = self.analyze_call_args(name, args, &signature);
+            let (hir_args, signature) = self.analyze_call_args(name, args, &signature);
             let callee = if self.is_builtin_function(name) {
                 HirCallee::Builtin {
                     name: name.clone(),
@@ -1819,7 +1899,7 @@ impl HirBuilder {
                     params,
                     return_type: *ret,
                 };
-                let hir_args = self.analyze_call_args(name, args, &signature);
+                let (hir_args, signature) = self.analyze_call_args(name, args, &signature);
                 return self.make_expr(
                     span,
                     signature.return_type.clone(),
@@ -1859,8 +1939,9 @@ impl HirBuilder {
         name: &str,
         args: &[Expr],
         signature: &FunctionType,
-    ) -> Vec<HirExpr> {
+    ) -> (Vec<HirExpr>, FunctionType) {
         let mut hir_args = Vec::new();
+        let mut signature = signature.clone();
 
         if signature.params.len() != args.len() {
             self.errors.push(SemanticError::ArityMismatch {
@@ -1871,11 +1952,15 @@ impl HirBuilder {
             for arg in args {
                 hir_args.push(self.analyze_expr(arg));
             }
-            return hir_args;
+            return (hir_args, signature);
         }
 
         for (idx, arg) in args.iter().enumerate() {
             let hir_arg = self.analyze_expr(arg);
+            if signature.params[idx] == Type::Unknown && hir_arg.ty != Type::Unknown {
+                self.refine_function_param_type(name, idx, &hir_arg.ty);
+                signature.params[idx] = hir_arg.ty.clone();
+            }
             if !self.is_assignable(&hir_arg.ty, &signature.params[idx]) {
                 self.errors.push(SemanticError::InvalidArgumentType {
                     function: name.to_string(),
@@ -1887,7 +1972,7 @@ impl HirBuilder {
             hir_args.push(hir_arg);
         }
 
-        hir_args
+        (hir_args, signature)
     }
 
     fn analyze_method_call_args(
