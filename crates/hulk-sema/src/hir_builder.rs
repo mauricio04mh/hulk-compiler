@@ -200,33 +200,50 @@ impl HirBuilder {
             return;
         }
 
-        let Some(current_function) = self.current_function.clone() else {
-            return;
-        };
-        let Some(&idx) = self.current_function_param_indices.get(&symbol.id) else {
-            return;
-        };
+        if let Some(current_function) = self.current_function.clone() {
+            let Some(&idx) = self.current_function_param_indices.get(&symbol.id) else {
+                return;
+            };
 
-        let current_ty = self
-            .functions
-            .get(&current_function)
-            .and_then(|signature| signature.params.get(idx))
-            .cloned()
-            .unwrap_or(Type::Unknown);
+            let current_ty = self
+                .functions
+                .get(&current_function)
+                .and_then(|signature| signature.params.get(idx))
+                .cloned()
+                .unwrap_or(Type::Unknown);
 
-        if current_ty == Type::Unknown {
-            self.refine_function_param_type(&current_function, idx, expected);
-            if let Some(symbol_mut) = self.resolve_symbol_mut(name) {
-                symbol_mut.ty = expected.clone();
+            if current_ty == Type::Unknown {
+                self.refine_function_param_type(&current_function, idx, expected);
+                if let Some(symbol_mut) = self.resolve_symbol_mut(name) {
+                    symbol_mut.ty = expected.clone();
+                }
+                return;
+            }
+
+            if current_ty != *expected {
+                self.errors.push(SemanticError::TypeMismatch {
+                    expected: current_ty,
+                    found: expected.clone(),
+                });
             }
             return;
         }
 
-        if current_ty != *expected {
-            self.errors.push(SemanticError::TypeMismatch {
-                expected: current_ty,
-                found: expected.clone(),
-            });
+        if self.current_method.is_some() {
+            let current_ty = symbol.ty.clone();
+            if current_ty == Type::Unknown {
+                if let Some(symbol_mut) = self.resolve_symbol_mut(name) {
+                    symbol_mut.ty = expected.clone();
+                }
+                return;
+            }
+
+            if current_ty != *expected {
+                self.errors.push(SemanticError::TypeMismatch {
+                    expected: current_ty,
+                    found: expected.clone(),
+                });
+            }
         }
     }
 
@@ -551,6 +568,17 @@ impl HirBuilder {
         }
 
         let body = self.analyze_expr(&method.body);
+        for param in &mut params {
+            if let Some(symbol) = self.resolve_symbol(&param.name) {
+                param.ty = symbol.ty.clone();
+            }
+            if param.ty == Type::Unknown && self.report_unresolved_parameter_errors {
+                self.errors.push(SemanticError::CannotInferParameterType {
+                    function: method.name.clone(),
+                    parameter: param.name.clone(),
+                });
+            }
+        }
         self.pop_scope();
         self.current_method = None;
 
@@ -625,7 +653,9 @@ impl HirBuilder {
             let ty = Type::from_type_ref(ty_ref);
             self.validate_user_type(&ty);
             ty
-        } else if self.current_function.as_deref() == Some(owner) {
+        } else if self.current_function.as_deref() == Some(owner)
+            || self.current_method.as_deref() == Some(owner)
+        {
             Type::Unknown
         } else {
             self.errors.push(SemanticError::CannotInferParameterType {
