@@ -47,20 +47,38 @@ fn infer_string_from_concat() {
 }
 
 #[test]
-fn infer_two_numbers_from_binary_operation() {
-    let program = analyze("function add(x, y) => x + y;\n\nadd(1, 2);").expect("should analyze");
+fn infer_multi_parameter_from_call_site() {
+    let program =
+        analyze("function add(x, y, z) => x + y;\n\nadd(1, 2, 3);").expect("should analyze");
     let func = function(&program, "add");
     assert_eq!(func.params[0].ty, Type::Number);
     assert_eq!(func.params[1].ty, Type::Number);
+    assert_eq!(func.params[2].ty, Type::Number);
     assert_eq!(func.return_type, Type::Number);
 }
 
 #[test]
 fn unconstrained_parameter_still_fails() {
-    let err = analyze("function id(x) => x;\n\nid(1);")
+    let err = analyze("function id(x) => x;\n\n1;")
         .expect_err("analysis should fail for unconstrained parameter");
     assert!(matches!(
         err.as_slice(),
         [SemanticError::CannotInferParameterType { .. }, ..]
     ));
+}
+
+#[test]
+fn infer_pure_call_site_number() {
+    let program = analyze("function id(x) => x;\n\nid(1);").expect("should analyze");
+    let func = function(&program, "id");
+    assert_eq!(func.params[0].ty, Type::Number);
+    assert_eq!(func.return_type, Type::Number);
+}
+
+#[test]
+fn infer_pure_call_site_string() {
+    let program = analyze("function id(x) => x;\n\nid(\"hello\");").expect("should analyze");
+    let func = function(&program, "id");
+    assert_eq!(func.params[0].ty, Type::String);
+    assert_eq!(func.return_type, Type::String);
 }
