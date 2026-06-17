@@ -1,16 +1,37 @@
 use hulk_frontend::parse_hulk_types_program;
+use hulk_ir::{IrBinaryOp, IrDataValue, IrInstr, IrProgram};
 use hulk_lower::{LowerError, lower_program};
 use hulk_sema::analyze_program;
 
-fn lower_source(source: &str) -> Result<String, LowerError> {
+fn lower_source_ir(source: &str) -> Result<IrProgram, LowerError> {
     let ast = parse_hulk_types_program(source).expect("source should parse");
     let semantic = analyze_program(&ast).expect("source should pass semantic analysis");
-    lower_program(&semantic).map(|ir| ir.to_string())
+    lower_program(&semantic)
+}
+
+fn lower_source(source: &str) -> Result<String, LowerError> {
+    lower_source_ir(source).map(|ir| ir.to_string())
 }
 
 fn assert_golden(name: &str, source: &str, expected: &str) {
     let actual = lower_source(source).expect("lowering should pass");
     assert_eq!(actual, expected, "golden IR mismatch for {name}");
+}
+
+fn count_binary_op(program: &IrProgram, op: IrBinaryOp) -> usize {
+    program
+        .functions
+        .iter()
+        .flat_map(|function| &function.body)
+        .filter(|instr| matches!(instr, IrInstr::Binary { op: actual, .. } if *actual == op))
+        .count()
+}
+
+fn contains_string_data(program: &IrProgram, value: &str) -> bool {
+    program
+        .data
+        .iter()
+        .any(|data| matches!(&data.value, IrDataValue::String(actual) if actual == value))
 }
 
 #[test]
@@ -236,4 +257,49 @@ fn golden_big_ir_smoke() {
         include_str!("golden/big_ir_smoke.hulk"),
         include_str!("golden/big_ir_smoke.expected.ir"),
     );
+}
+
+#[test]
+fn concat_space_literal_lowers_to_two_concats() {
+    let program = lower_source_ir("\"Hello\" @@ \"World\";").expect("lowering should pass");
+
+    assert_eq!(count_binary_op(&program, IrBinaryOp::ConcatSpace), 0);
+    assert_eq!(count_binary_op(&program, IrBinaryOp::Concat), 2);
+    assert!(contains_string_data(&program, " "));
+}
+
+#[test]
+fn concat_space_bindings_lowers_to_two_concats_and_keeps_locals() {
+    let program =
+        lower_source_ir("let a: String = \"Hello\" in let b: String = \"World\" in a @@ b;")
+            .expect("lowering should pass");
+
+    assert_eq!(count_binary_op(&program, IrBinaryOp::ConcatSpace), 0);
+    assert_eq!(count_binary_op(&program, IrBinaryOp::Concat), 2);
+
+    let entry = program
+        .functions
+        .iter()
+        .find(|function| function.id == program.entry)
+        .expect("entry function should exist");
+    assert!(entry.locals.iter().any(|local| local.name == "a"));
+    assert!(entry.locals.iter().any(|local| local.name == "b"));
+}
+
+#[test]
+fn concat_does_not_insert_space_data() {
+    let program = lower_source_ir("\"Hello\" @ \"World\";").expect("lowering should pass");
+
+    assert_eq!(count_binary_op(&program, IrBinaryOp::ConcatSpace), 0);
+    assert_eq!(count_binary_op(&program, IrBinaryOp::Concat), 1);
+    assert!(!contains_string_data(&program, " "));
+}
+
+#[test]
+fn nested_concat_space_lowers_without_concat_space_op() {
+    let program = lower_source_ir("(\"A\" @@ \"B\") @@ \"C\";").expect("lowering should pass");
+
+    assert_eq!(count_binary_op(&program, IrBinaryOp::ConcatSpace), 0);
+    assert_eq!(count_binary_op(&program, IrBinaryOp::Concat), 4);
+    assert!(contains_string_data(&program, " "));
 }

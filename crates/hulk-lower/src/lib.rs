@@ -479,6 +479,28 @@ impl LoweringContext {
         right: &HirExpr,
         builder: &mut FunctionBuilder,
     ) -> Result<IrValue, LowerError> {
+        if matches!(op, BinaryOp::ConcatSpace) {
+            let left = self.lower_expr(left, builder)?;
+            let space = IrValue::DataRef(self.intern_string(" ".to_string()));
+            let tmp = builder.new_temp(IrTypeRef::String);
+            builder.body.push(IrInstr::Binary {
+                dst: tmp,
+                op: IrBinaryOp::Concat,
+                left,
+                right: space,
+            });
+
+            let right = self.lower_expr(right, builder)?;
+            let dst = builder.new_temp(lower_type(&expr.ty));
+            builder.body.push(IrInstr::Binary {
+                dst,
+                op: IrBinaryOp::Concat,
+                left: tmp.into_value(),
+                right,
+            });
+            return Ok(dst.into_value());
+        }
+
         let left = self.lower_expr(left, builder)?;
         let right = self.lower_expr(right, builder)?;
         let dst = builder.new_temp(lower_type(&expr.ty));
