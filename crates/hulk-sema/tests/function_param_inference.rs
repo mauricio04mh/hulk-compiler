@@ -82,3 +82,64 @@ fn infer_pure_call_site_string() {
     assert_eq!(func.params[0].ty, Type::String);
     assert_eq!(func.return_type, Type::String);
 }
+
+#[test]
+fn infer_across_one_global_function_call_number() {
+    let program = analyze("function g(y) => y + 1;\nfunction f(x) => g(x);\n\nf(1);")
+        .expect("should analyze");
+    let g = function(&program, "g");
+    let f = function(&program, "f");
+    assert_eq!(g.params[0].ty, Type::Number);
+    assert_eq!(g.return_type, Type::Number);
+    assert_eq!(f.params[0].ty, Type::Number);
+    assert_eq!(f.return_type, Type::Number);
+}
+
+#[test]
+fn infer_identity_chain_string() {
+    let program = analyze("function id(x) => x;\nfunction wrap(y) => id(y);\n\nwrap(\"hello\");")
+        .expect("should analyze");
+    let id = function(&program, "id");
+    let wrap = function(&program, "wrap");
+    assert_eq!(id.params[0].ty, Type::String);
+    assert_eq!(id.return_type, Type::String);
+    assert_eq!(wrap.params[0].ty, Type::String);
+    assert_eq!(wrap.return_type, Type::String);
+}
+
+#[test]
+fn infer_multiple_args_across_function_call() {
+    let program =
+        analyze("function add(a, b) => a + b;\nfunction f(x, y) => add(x, y);\n\nf(1, 2);")
+            .expect("should analyze");
+    let add = function(&program, "add");
+    let f = function(&program, "f");
+    assert_eq!(add.params[0].ty, Type::Number);
+    assert_eq!(add.params[1].ty, Type::Number);
+    assert_eq!(add.return_type, Type::Number);
+    assert_eq!(f.params[0].ty, Type::Number);
+    assert_eq!(f.params[1].ty, Type::Number);
+    assert_eq!(f.return_type, Type::Number);
+}
+
+#[test]
+fn infer_boolean_across_function_call() {
+    let program = analyze("function negate(x) => !x;\nfunction f(y) => negate(y);\n\nf(true);")
+        .expect("should analyze");
+    let negate = function(&program, "negate");
+    let f = function(&program, "f");
+    assert_eq!(negate.params[0].ty, Type::Boolean);
+    assert_eq!(negate.return_type, Type::Boolean);
+    assert_eq!(f.params[0].ty, Type::Boolean);
+    assert_eq!(f.return_type, Type::Boolean);
+}
+
+#[test]
+fn unconstrained_function_chain_still_fails() {
+    let err = analyze("function id(x) => x;\nfunction wrap(y) => id(y);\n\n1;")
+        .expect_err("analysis should fail for unconstrained function chain");
+    assert!(matches!(
+        err.as_slice(),
+        [SemanticError::CannotInferParameterType { .. }, ..]
+    ));
+}
