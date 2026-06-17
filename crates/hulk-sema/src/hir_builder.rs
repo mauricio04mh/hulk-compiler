@@ -26,6 +26,7 @@ struct PassResult {
     semantic: SemanticProgram,
     signature_changed: bool,
     functions: HashMap<String, FunctionType>,
+    methods: HashMap<String, FunctionType>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ pub struct HirBuilder {
     current_method: Option<String>,
     current_function: Option<String>,
     current_function_param_indices: HashMap<SymbolId, usize>,
+    method_signatures: HashMap<String, FunctionType>,
     report_unresolved_parameter_errors: bool,
     signature_changed: bool,
     next_hir_id: u32,
@@ -64,6 +66,7 @@ impl HirBuilder {
             current_method: None,
             current_function: None,
             current_function_param_indices: HashMap::new(),
+            method_signatures: HashMap::new(),
             report_unresolved_parameter_errors: false,
             signature_changed: false,
             next_hir_id: 0,
@@ -73,19 +76,23 @@ impl HirBuilder {
 
     pub fn analyze_program(self, program: &Program) -> Result<SemanticProgram, Vec<SemanticError>> {
         let mut functions = HashMap::new();
+        let mut methods = HashMap::new();
 
         loop {
             let mut pass_builder = HirBuilder::new(self.registry.clone());
             pass_builder.functions = functions.clone();
+            pass_builder.method_signatures = methods.clone();
             let result = pass_builder.run_pass(program, false)?;
 
             if result.signature_changed {
                 functions = result.functions;
+                methods = result.methods;
                 continue;
             }
 
             let mut final_builder = HirBuilder::new(self.registry.clone());
             final_builder.functions = result.functions;
+            final_builder.method_signatures = result.methods;
             return final_builder
                 .run_pass(program, true)
                 .map(|result| result.semantic);
@@ -106,6 +113,12 @@ impl HirBuilder {
         for decl in &program.declarations {
             if let Decl::Function(func) = decl {
                 self.register_function_signature(func);
+            }
+        }
+
+        for decl in &program.declarations {
+            if let Decl::Type(td) = decl {
+                self.register_method_signatures(td);
             }
         }
 
@@ -138,6 +151,7 @@ impl HirBuilder {
                 },
                 signature_changed: self.signature_changed,
                 functions: self.functions,
+                methods: self.method_signatures,
             })
         } else {
             Err(self.errors)
@@ -352,6 +366,90 @@ impl HirBuilder {
         );
     }
 
+    fn method_signature_key(owner_type: &str, method_name: &str) -> String {
+        format!("{owner_type}::{method_name}")
+    }
+
+    fn register_method_signatures(&mut self, td: &TypeDecl) {
+        for member in &td.members {
+            let TypeMember::Method(method) = member else {
+                continue;
+            };
+
+            let key = Self::method_signature_key(&td.name, &method.name);
+            let existing = self.method_signatures.get(&key).cloned();
+            let params = method
+                .params
+                .iter()
+                .enumerate()
+                .map(|(idx, param)| {
+                    if let Some(ty_ref) = &param.ty {
+                        let ty = Type::from_type_ref(ty_ref);
+                        self.validate_user_type(&ty);
+                        ty
+                    } else {
+                        existing
+                            .as_ref()
+                            .and_then(|signature| signature.params.get(idx))
+                            .cloned()
+                            .unwrap_or(Type::Unknown)
+                    }
+                })
+                .collect();
+
+            let return_type = if let Some(ret_ref) = &method.return_type {
+                let ty = Type::from_type_ref(ret_ref);
+                self.validate_user_type(&ty);
+                ty
+            } else {
+                existing
+                    .map(|signature| signature.return_type)
+                    .unwrap_or(Type::Unknown)
+            };
+
+            self.method_signatures.insert(
+                key,
+                FunctionType {
+                    params,
+                    return_type,
+                },
+            );
+        }
+    }
+
+    fn refine_method_param_type(
+        &mut self,
+        owner_type: &str,
+        method_name: &str,
+        idx: usize,
+        expected: &Type,
+    ) {
+        if *expected == Type::Unknown {
+            return;
+        }
+
+        let key = Self::method_signature_key(owner_type, method_name);
+        let Some(signature) = self.method_signatures.get_mut(&key) else {
+            return;
+        };
+        let Some(current) = signature.params.get(idx).cloned() else {
+            return;
+        };
+
+        if current == Type::Unknown {
+            signature.params[idx] = expected.clone();
+            self.signature_changed = true;
+            return;
+        }
+
+        if current != *expected {
+            self.errors.push(SemanticError::TypeMismatch {
+                expected: current,
+                found: expected.clone(),
+            });
+        }
+    }
+
     fn analyze_function_decl(&mut self, func: &FunctionDecl) -> HirFunctionDecl {
         let signature = self
             .functions
@@ -549,6 +647,16 @@ impl HirBuilder {
         self.current_method = Some(method.name.clone());
         self.push_scope();
 
+        let key = Self::method_signature_key(owner_type, &method.name);
+        let signature = self
+            .method_signatures
+            .get(&key)
+            .cloned()
+            .unwrap_or(FunctionType {
+                params: Vec::new(),
+                return_type: Type::Unknown,
+            });
+
         self.define_symbol(
             "self".to_string(),
             Type::UserType(owner_type.to_string()),
@@ -557,7 +665,17 @@ impl HirBuilder {
 
         let mut params = Vec::new();
         for param in &method.params {
-            let ty = self.parameter_type(param, &method.name);
+            let ty = if let Some(ty_ref) = &param.ty {
+                let ty = Type::from_type_ref(ty_ref);
+                self.validate_user_type(&ty);
+                ty
+            } else {
+                signature
+                    .params
+                    .get(params.len())
+                    .cloned()
+                    .unwrap_or(Type::Unknown)
+            };
             let symbol = self.define_symbol(param.name.clone(), ty.clone(), SymbolKind::Parameter);
             params.push(HirParam {
                 name: param.name.clone(),
@@ -594,8 +712,29 @@ impl HirBuilder {
             }
             declared
         } else {
-            body.ty.clone()
+            if body.ty != Type::Unknown {
+                body.ty.clone()
+            } else {
+                signature.return_type.clone()
+            }
         };
+
+        let updated_signature = FunctionType {
+            params: params.iter().map(|param| param.ty.clone()).collect(),
+            return_type: return_type.clone(),
+        };
+        if self
+            .method_signatures
+            .get(&key)
+            .map(|signature| {
+                signature.params != updated_signature.params
+                    || signature.return_type != updated_signature.return_type
+            })
+            .unwrap_or(true)
+        {
+            self.signature_changed = true;
+        }
+        self.method_signatures.insert(key, updated_signature);
 
         HirMethodDecl {
             owner_type: owner_type.to_string(),
@@ -1410,7 +1549,7 @@ impl HirBuilder {
     ) -> HirExpr {
         let object_hir = self.analyze_expr(object);
 
-        let Some((type_name, signature)) = self.method_signature_for_call(&object_hir.ty, method)
+        let Some((owner_name, signature)) = self.method_signature_for_call(&object_hir.ty, method)
         else {
             self.errors.push(SemanticError::UndefinedMethod {
                 type_name: method_receiver_type_name(&object_hir.ty),
@@ -1437,8 +1576,16 @@ impl HirBuilder {
             );
         };
 
-        let hir_args =
-            self.analyze_method_call_args(&format!("{type_name}.{method}"), args, &signature);
+        let refine_target = self
+            .registry
+            .get_type(&owner_name)
+            .map(|_| (owner_name.as_str(), method));
+        let (hir_args, signature) = self.analyze_method_call_args(
+            &format!("{owner_name}.{method}"),
+            refine_target,
+            args,
+            &signature,
+        );
         self.make_expr(
             span,
             signature.return_type.clone(),
@@ -1565,8 +1712,12 @@ impl HirBuilder {
             params: info.params,
             return_type: info.return_type,
         };
-        let hir_args =
-            self.analyze_method_call_args(&format!("base.{base_method_name}"), args, &signature);
+        let (hir_args, signature) = self.analyze_method_call_args(
+            &format!("base.{base_method_name}"),
+            None,
+            args,
+            &signature,
+        );
         self.make_expr(
             span,
             signature.return_type.clone(),
@@ -2024,10 +2175,12 @@ impl HirBuilder {
     fn analyze_method_call_args(
         &mut self,
         name: &str,
+        refine_target: Option<(&str, &str)>,
         args: &[Expr],
         signature: &FunctionType,
-    ) -> Vec<HirExpr> {
+    ) -> (Vec<HirExpr>, FunctionType) {
         let mut hir_args = Vec::new();
+        let mut signature = signature.clone();
 
         if signature.params.len() != args.len() {
             self.errors.push(SemanticError::ArityMismatch {
@@ -2038,11 +2191,17 @@ impl HirBuilder {
             for arg in args {
                 hir_args.push(self.analyze_expr(arg));
             }
-            return hir_args;
+            return (hir_args, signature);
         }
 
         for (idx, arg) in args.iter().enumerate() {
             let hir_arg = self.analyze_expr(arg);
+            if let Some((owner_type, method_name)) = refine_target {
+                if signature.params[idx] == Type::Unknown && hir_arg.ty != Type::Unknown {
+                    self.refine_method_param_type(owner_type, method_name, idx, &hir_arg.ty);
+                    signature.params[idx] = hir_arg.ty.clone();
+                }
+            }
             if !self.is_assignable(&hir_arg.ty, &signature.params[idx]) {
                 self.errors.push(SemanticError::InvalidArgumentType {
                     function: name.to_string(),
@@ -2054,7 +2213,7 @@ impl HirBuilder {
             hir_args.push(hir_arg);
         }
 
-        hir_args
+        (hir_args, signature)
     }
 
     fn method_signature_for_call(
@@ -2063,19 +2222,21 @@ impl HirBuilder {
         method: &str,
     ) -> Option<(String, FunctionType)> {
         match obj_ty {
-            Type::UserType(type_name) => {
-                self.registry
-                    .lookup_method_info(type_name, method)
-                    .map(|info| {
-                        (
-                            type_name.clone(),
-                            FunctionType {
+            Type::UserType(type_name) => self
+                .registry
+                .lookup_method_owner_info(type_name, method)
+                .map(|(owner, info)| {
+                    let key = Self::method_signature_key(&owner, method);
+                    let signature =
+                        self.method_signatures
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or(FunctionType {
                                 params: info.params,
                                 return_type: info.return_type,
-                            },
-                        )
-                    })
-            }
+                            });
+                    (owner, signature)
+                }),
             Type::Vector(inner) => match method {
                 "next" => Some((
                     "Vector".to_string(),

@@ -399,6 +399,30 @@ impl TypeRegistry {
         }
     }
 
+    /// Finds a method and returns the concrete owner type that defines it.
+    pub fn lookup_method_owner_info(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<(String, MethodInfo)> {
+        let mut current = Some(type_name);
+        while let Some(name) = current {
+            let Some(ti) = self.types.get(name) else {
+                break;
+            };
+            if let Some(mi) = ti.methods.get(method_name) {
+                return Some((name.to_string(), mi.clone()));
+            }
+            current = ti.parent.as_deref();
+        }
+        if let Some(proto) = self.protocols.get(type_name) {
+            if let Some(mi) = proto.methods.get(method_name) {
+                return Some((type_name.to_string(), mi.clone()));
+            }
+        }
+        None
+    }
+
     /// Returns the nearest common ancestor of two type names in the hierarchy, or Object.
     pub fn least_common_ancestor(&self, a: &str, b: &str) -> crate::types::Type {
         // Collect the ancestor chain of a (inclusive).
