@@ -1137,11 +1137,7 @@ impl HirBuilder {
                 );
             };
 
-            if let Some(attr_ty) = self
-                .registry
-                .get_type(&owner_type)
-                .and_then(|info| info.attributes.get(member).cloned())
-            {
+            if let Some(attr_ty) = self.registry.lookup_attribute(&owner_type, member) {
                 return self.make_expr(
                     span,
                     attr_ty.clone(),
@@ -1308,6 +1304,21 @@ impl HirBuilder {
                 },
             );
         };
+        let Some(current_type) = self.current_type.clone() else {
+            self.errors.push(SemanticError::UnsupportedConstruct {
+                message: "base() can only be called inside a method body".to_string(),
+            });
+            let hir_args = args.iter().map(|arg| self.analyze_expr(arg)).collect();
+            return self.make_expr(
+                span,
+                Type::Unknown,
+                HirExprKind::BaseCall {
+                    parent_type: String::new(),
+                    method_name,
+                    args: hir_args,
+                },
+            );
+        };
         let Some(parent_type) = self.current_type_parent.clone() else {
             self.errors.push(SemanticError::UnsupportedConstruct {
                 message: "Cannot use 'base' in a type without a parent".to_string(),
@@ -1324,7 +1335,12 @@ impl HirBuilder {
             );
         };
 
-        let Some(info) = self.registry.lookup_method_info(&parent_type, &method_name) else {
+        let Some((base_method_name, info)) = self.registry.resolve_base_method_info(
+            &current_type,
+            &parent_type,
+            &method_name,
+            args.len(),
+        ) else {
             self.errors.push(SemanticError::UnsupportedConstruct {
                 message: format!("Parent type '{parent_type}' has no method '{method_name}'"),
             });
@@ -1345,13 +1361,13 @@ impl HirBuilder {
             return_type: info.return_type,
         };
         let hir_args =
-            self.analyze_method_call_args(&format!("base.{method_name}"), args, &signature);
+            self.analyze_method_call_args(&format!("base.{base_method_name}"), args, &signature);
         self.make_expr(
             span,
             signature.return_type.clone(),
             HirExprKind::BaseCall {
                 parent_type,
-                method_name,
+                method_name: base_method_name,
                 args: hir_args,
             },
         )

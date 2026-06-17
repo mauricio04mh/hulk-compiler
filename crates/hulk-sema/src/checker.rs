@@ -894,23 +894,20 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         }
 
         Expr::MemberAccess { object, member, .. } => {
-            // W3b: Attributes are private per spec. Only self.attr inside the type's own
-            // methods is allowed, and only for attributes the type itself declares.
+            // W3b: Attributes are private outside object methods. self.attr inside a
+            // subtype may reach attributes inherited through the object layout.
             let is_self = matches!(object.as_ref(), Expr::SelfRef);
             let obj_ty = infer_expr(object, env);
             if obj_ty == Type::Unknown {
                 return Type::Unknown;
             }
             if is_self {
-                // self.attr — look only in the current type's OWN attributes (not inherited).
                 let Type::UserType(ref tname) = obj_ty else {
                     return Type::Object;
                 };
                 let tname = tname.clone();
-                if let Some(ti) = env.registry.get_type(&tname) {
-                    if let Some(ty) = ti.attributes.get(member.as_str()) {
-                        return ty.clone();
-                    }
+                if let Some(ty) = env.registry.lookup_attribute(&tname, member.as_str()) {
+                    return ty;
                 }
                 env.record_error(SemanticError::AttributeIsPrivate {
                     type_name: tname,
@@ -977,9 +974,19 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             // W3c: base(args) in a method body calls the parent's implementation of the
             // CURRENT method, not the parent constructor.
             let current_method = env.current_method.clone();
+            let current_type = env.current_type.clone();
             let parent_name = env.current_type_parent.clone();
 
             let Some(method_name) = current_method else {
+                env.record_error(SemanticError::UnsupportedConstruct {
+                    message: "base() can only be called inside a method body".to_string(),
+                });
+                for arg in args {
+                    infer_expr(arg, env);
+                }
+                return Type::Unknown;
+            };
+            let Some(type_name) = current_type else {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: "base() can only be called inside a method body".to_string(),
                 });
@@ -999,8 +1006,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             };
 
             // Look up the parent's version of the current method.
-            let parent_mi = env.registry.lookup_method_info(&pname, &method_name);
-            let Some(mi) = parent_mi else {
+            let parent_mi =
+                env.registry
+                    .resolve_base_method_info(&type_name, &pname, &method_name, args.len());
+            let Some((base_method_name, mi)) = parent_mi else {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: format!("Parent type '{pname}' has no method '{method_name}'"),
                 });
@@ -1014,7 +1023,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
 
             if param_types.len() != args.len() {
                 env.record_error(SemanticError::ArityMismatch {
-                    function: format!("base.{method_name}"),
+                    function: format!("base.{base_method_name}"),
                     expected: param_types.len(),
                     found: args.len(),
                 });

@@ -17,6 +17,14 @@ typedef enum HulkValueTag {
 } HulkValueTag;
 
 typedef struct HulkObject HulkObject;
+typedef struct HulkVTable HulkVTable;
+
+struct HulkVTable {
+    long long type_id;
+    HulkVTable* parent;
+    long long method_count;
+    void** methods;
+};
 
 typedef struct HulkValue {
     HulkValueTag tag;
@@ -30,6 +38,7 @@ typedef struct HulkValue {
 
 struct HulkObject {
     long long type_id;
+    HulkVTable* vtable;
     long long attr_count;
     HulkValue* attrs;
 };
@@ -43,7 +52,8 @@ HulkString* hulk_string_from_number(double value);
 HulkString* hulk_string_from_bool(unsigned char value);
 void hulk_runtime_error(const char* message);
 
-HulkObject* hulk_alloc_object(long long type_id, long long attr_count);
+HulkObject* hulk_alloc_object(long long type_id, long long attr_count, HulkVTable* vtable);
+void* hulk_object_method(HulkObject* object, long long slot);
 
 void hulk_object_set_number(HulkObject* object, long long attr_id, double value);
 void hulk_object_set_bool(HulkObject* object, long long attr_id, unsigned char value);

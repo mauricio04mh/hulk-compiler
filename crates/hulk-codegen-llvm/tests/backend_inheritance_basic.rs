@@ -25,107 +25,105 @@ impl fmt::Display for TestError {
 impl Error for TestError {}
 
 #[derive(Debug, Clone, Copy)]
-struct ObjectCase {
+struct InheritanceCase {
     name: &'static str,
     source: &'static str,
     expected_stdout: &'static str,
 }
 
-const OBJECT_CASES: &[ObjectCase] = &[
-    ObjectCase {
-        name: "box get",
+const INHERITANCE_CASES: &[InheritanceCase] = &[
+    InheritanceCase {
+        name: "initializes inherited attributes",
         source: r#"
-type Box(value: Number) {
-    value: Number = value;
-    get(): Number => self.value;
+type Animal(name: String) {
+    name: String = name;
+
+    getName(): String => self.name;
 }
 
-let b = new Box(10) in print(b.get());
-"#,
-        expected_stdout: "10\n",
-    },
-    ObjectCase {
-        name: "point methods",
-        source: r#"
-type Point(x: Number, y: Number) {
-    x: Number = x;
-    y: Number = y;
-
-    getX(): Number => self.x;
-    getY(): Number => self.y;
-    sum(): Number => self.x + self.y;
+type Dog(name: String) inherits Animal(name) {
+    bark(): String => "woof";
 }
 
-let p = new Point(3, 4) in {
-    print(p.getX());
-    print(p.getY());
-    print(p.sum());
+let d = new Dog("Bolt") in {
+    print(d.getName());
+    print(d.bark());
 };
 "#,
-        expected_stdout: "3\n4\n7\n",
+        expected_stdout: "Bolt\nwoof\n",
     },
-    ObjectCase {
-        name: "string attribute and concat method",
-        source: r#"
-type Greeter(name: String) {
-    name: String = name;
-    hello(): String => "Hello" @@ self.name;
-}
-
-let g = new Greeter("Hulk") in print(g.hello());
-"#,
-        expected_stdout: "Hello Hulk\n",
-    },
-    ObjectCase {
-        name: "method calls method on same object",
-        source: r#"
-type Point(x: Number, y: Number) {
-    x: Number = x;
-    y: Number = y;
-
-    sum(): Number => self.x + self.y;
-    description(): String => "sum = " @ self.sum();
-}
-
-let p = new Point(3, 4) in print(p.description());
-"#,
-        expected_stdout: "sum = 7\n",
-    },
-    ObjectCase {
-        name: "method mutates attribute",
+    InheritanceCase {
+        name: "inherited method reads parent attribute",
         source: r#"
 type Counter(value: Number) {
     value: Number = value;
 
-    inc(): Number => {
-        self.value := self.value + 1;
-        self.value;
-    };
+    get(): Number => self.value;
 }
 
-let c = new Counter(0) in {
-    print(c.inc());
-    print(c.inc());
+type NamedCounter(name: String, value: Number) inherits Counter(value) {
+    name: String = name;
+
+    getName(): String => self.name;
+}
+
+let c = new NamedCounter("visits", 5) in {
+    print(c.getName());
+    print(c.get());
 };
 "#,
-        expected_stdout: "1\n2\n",
+        expected_stdout: "visits\n5\n",
     },
-    ObjectCase {
-        name: "boolean attribute",
+    InheritanceCase {
+        name: "override on concrete type",
         source: r#"
-type Flag(value: Boolean) {
-    value: Boolean = value;
-    get(): Boolean => self.value;
+type Animal {
+    speak(): String => "animal";
 }
 
-let a = new Flag(true) in {
-    let b = new Flag(false) in {
-        print(a.get());
-        print(b.get());
-    };
+type Dog inherits Animal {
+    speak(): String => "dog";
+}
+
+let d = new Dog() in print(d.speak());
+"#,
+        expected_stdout: "dog\n",
+    },
+    InheritanceCase {
+        name: "base call in override",
+        source: r#"
+type Animal {
+    speak(): String => "animal";
+}
+
+type Dog inherits Animal {
+    speak(): String => "dog";
+    parentSpeak(): String => base();
+}
+
+let d = new Dog() in {
+    print(d.speak());
+    print(d.parentSpeak());
 };
 "#,
-        expected_stdout: "true\nfalse\n",
+        expected_stdout: "dog\nanimal\n",
+    },
+    InheritanceCase {
+        name: "base call with concat",
+        source: r#"
+type Animal(name: String) {
+    name: String = name;
+
+    describe(): String => "Animal " @ self.name;
+}
+
+type Dog(name: String) inherits Animal(name) {
+    describe(): String => base() @ " Dog";
+}
+
+let d = new Dog("Bolt") in print(d.describe());
+"#,
+        expected_stdout: "Animal Bolt Dog\n",
     },
 ];
 
@@ -147,7 +145,7 @@ fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
         return None;
     }
 
-    let temp_dir = match create_temp_dir("backend-objects-basic") {
+    let temp_dir = match create_temp_dir("backend-inheritance-basic") {
         Ok(path) => path,
         Err(err) => return Some(Err(format!("failed to create temp dir: {err}"))),
     };
@@ -223,8 +221,8 @@ fn create_temp_dir(prefix: &str) -> Result<PathBuf, std::io::Error> {
 }
 
 #[test]
-fn basic_object_programs_emit_llvm() {
-    for case in OBJECT_CASES {
+fn basic_inheritance_programs_emit_llvm() {
+    for case in INHERITANCE_CASES {
         let llvm = emit_llvm_from_source(case.source)
             .unwrap_or_else(|err| panic!("{} should emit LLVM: {err}", case.name));
         assert!(
@@ -241,13 +239,13 @@ fn basic_object_programs_emit_llvm() {
 }
 
 #[test]
-fn basic_object_programs_execute_with_clang_when_available() {
+fn basic_inheritance_programs_execute_with_clang_when_available() {
     if !clang_is_available() {
-        eprintln!("clang is not available; skipping LLVM object execution checks");
+        eprintln!("clang is not available; skipping LLVM inheritance execution checks");
         return;
     }
 
-    for case in OBJECT_CASES {
+    for case in INHERITANCE_CASES {
         let llvm = emit_llvm_from_source(case.source)
             .unwrap_or_else(|err| panic!("{} should emit LLVM: {err}", case.name));
         let stdout = compile_and_run_llvm(&llvm)

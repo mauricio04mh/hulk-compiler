@@ -103,9 +103,19 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         expected_stdout: "x = 42\n",
     },
     SupportedCase {
+        name: "string concat numeric expression",
+        source: "{ print(\"sum = \" @ (1 + 2)); }",
+        expected_stdout: "sum = 3\n",
+    },
+    SupportedCase {
         name: "string concat bool",
         source: "{ print(\"ok = \" @ true); print(\"ok = \" @ false); }",
         expected_stdout: "ok = true\nok = false\n",
+    },
+    SupportedCase {
+        name: "string concat assigned variable",
+        source: "let s: String = \"Hello\" @@ \"World\" in print(s);",
+        expected_stdout: "Hello World\n",
     },
     SupportedCase {
         name: "chained string concat",
@@ -272,12 +282,4 @@ fn supported_minimal_programs_execute_with_clang_when_available() {
 fn unsupported_vector_fails_cleanly() {
     let err = codegen_error_from_source("let v = [1, 2, 3] in print(v[0]);");
     assert_unsupported_error(err, &["unsupported", "newvector", "vector"]);
-}
-
-#[test]
-fn unsupported_inherited_object_fails_cleanly() {
-    let err = codegen_error_from_source(
-        "type Parent {\n    x: Number = 10;\n}\n\ntype Child inherits Parent {\n    y: Number = 20;\n    getY(): Number => self.y;\n}\n\nlet c = new Child() in print(c.getY());",
-    );
-    assert_unsupported_error(err, &["unsupported", "inheritance"]);
 }

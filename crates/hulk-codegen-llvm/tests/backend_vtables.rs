@@ -1,4 +1,4 @@
-use hulk_codegen_llvm::emit_llvm;
+use hulk_codegen_llvm::{LlvmCodegenError, emit_llvm};
 use hulk_frontend::parse_hulk_types_program;
 use hulk_ir::IrProgram;
 use hulk_lower::lower_program;
@@ -25,107 +25,118 @@ impl fmt::Display for TestError {
 impl Error for TestError {}
 
 #[derive(Debug, Clone, Copy)]
-struct ObjectCase {
+struct VTableCase {
     name: &'static str,
     source: &'static str,
     expected_stdout: &'static str,
 }
 
-const OBJECT_CASES: &[ObjectCase] = &[
-    ObjectCase {
-        name: "box get",
+const VTABLE_CASES: &[VTableCase] = &[
+    VTableCase {
+        name: "simple dynamic dispatch",
         source: r#"
-type Box(value: Number) {
-    value: Number = value;
-    get(): Number => self.value;
+type Animal {
+    speak(): String => "animal";
 }
 
-let b = new Box(10) in print(b.get());
+type Dog inherits Animal {
+    speak(): String => "dog";
+}
+
+let a: Animal = new Dog() in print(a.speak());
 "#,
-        expected_stdout: "10\n",
+        expected_stdout: "dog\n",
     },
-    ObjectCase {
-        name: "point methods",
+    VTableCase {
+        name: "two dynamic subtypes",
         source: r#"
-type Point(x: Number, y: Number) {
-    x: Number = x;
-    y: Number = y;
-
-    getX(): Number => self.x;
-    getY(): Number => self.y;
-    sum(): Number => self.x + self.y;
+type Animal {
+    speak(): String => "animal";
 }
 
-let p = new Point(3, 4) in {
-    print(p.getX());
-    print(p.getY());
-    print(p.sum());
+type Dog inherits Animal {
+    speak(): String => "dog";
+}
+
+type Cat inherits Animal {
+    speak(): String => "cat";
+}
+
+let a: Animal = new Dog() in {
+    print(a.speak());
+    let b: Animal = new Cat() in print(b.speak());
 };
 "#,
-        expected_stdout: "3\n4\n7\n",
+        expected_stdout: "dog\ncat\n",
     },
-    ObjectCase {
-        name: "string attribute and concat method",
+    VTableCase {
+        name: "inherited method keeps parent slot",
         source: r#"
-type Greeter(name: String) {
+type Animal(name: String) {
     name: String = name;
-    hello(): String => "Hello" @@ self.name;
+
+    getName(): String => self.name;
 }
 
-let g = new Greeter("Hulk") in print(g.hello());
+type Dog(name: String) inherits Animal(name) {
+    bark(): String => "woof";
+}
+
+let a: Animal = new Dog("Bolt") in print(a.getName());
 "#,
-        expected_stdout: "Hello Hulk\n",
+        expected_stdout: "Bolt\n",
     },
-    ObjectCase {
-        name: "method calls method on same object",
+    VTableCase {
+        name: "override reads inherited attribute",
         source: r#"
-type Point(x: Number, y: Number) {
-    x: Number = x;
-    y: Number = y;
+type Animal(name: String) {
+    name: String = name;
 
-    sum(): Number => self.x + self.y;
-    description(): String => "sum = " @ self.sum();
+    describe(): String => "Animal " @ self.name;
 }
 
-let p = new Point(3, 4) in print(p.description());
+type Dog(name: String) inherits Animal(name) {
+    describe(): String => "Dog " @ self.name;
+}
+
+let a: Animal = new Dog("Bolt") in print(a.describe());
 "#,
-        expected_stdout: "sum = 7\n",
+        expected_stdout: "Dog Bolt\n",
     },
-    ObjectCase {
-        name: "method mutates attribute",
+    VTableCase {
+        name: "base call stays direct",
         source: r#"
-type Counter(value: Number) {
-    value: Number = value;
-
-    inc(): Number => {
-        self.value := self.value + 1;
-        self.value;
-    };
+type Animal {
+    speak(): String => "animal";
 }
 
-let c = new Counter(0) in {
-    print(c.inc());
-    print(c.inc());
+type Dog inherits Animal {
+    speak(): String => "dog";
+    parentSpeak(): String => base();
+}
+
+let d = new Dog() in {
+    print(d.speak());
+    print(d.parentSpeak());
 };
 "#,
-        expected_stdout: "1\n2\n",
+        expected_stdout: "dog\nanimal\n",
     },
-    ObjectCase {
-        name: "boolean attribute",
+    VTableCase {
+        name: "inherited method dispatches back through dynamic receiver",
         source: r#"
-type Flag(value: Boolean) {
-    value: Boolean = value;
-    get(): Boolean => self.value;
+type Animal {
+    speak(): String => "animal";
+    describe(): String => "says " @ self.speak();
 }
 
-let a = new Flag(true) in {
-    let b = new Flag(false) in {
-        print(a.get());
-        print(b.get());
-    };
-};
+type Dog inherits Animal {
+    speak(): String => "dog";
+}
+
+let a: Animal = new Dog() in print(a.describe());
 "#,
-        expected_stdout: "true\nfalse\n",
+        expected_stdout: "says dog\n",
     },
 ];
 
@@ -142,12 +153,17 @@ fn emit_llvm_from_source(source: &str) -> Result<String, Box<dyn Error>> {
     Ok(emit_llvm(&ir)?)
 }
 
+fn codegen_error_from_source(source: &str) -> LlvmCodegenError {
+    let ir = lower_ir_from_source(source).expect("source should lower to IR");
+    emit_llvm(&ir).expect_err("LLVM codegen should fail cleanly")
+}
+
 fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
     if !clang_is_available() {
         return None;
     }
 
-    let temp_dir = match create_temp_dir("backend-objects-basic") {
+    let temp_dir = match create_temp_dir("backend-vtables") {
         Ok(path) => path,
         Err(err) => return Some(Err(format!("failed to create temp dir: {err}"))),
     };
@@ -222,32 +238,59 @@ fn create_temp_dir(prefix: &str) -> Result<PathBuf, std::io::Error> {
     Ok(path)
 }
 
+fn assert_unsupported_error(err: LlvmCodegenError, keywords: &[&str]) {
+    let rendered = err.to_string().to_lowercase();
+    assert!(
+        keywords
+            .iter()
+            .any(|keyword| rendered.contains(&keyword.to_lowercase())),
+        "expected unsupported LLVM codegen error mentioning one of {:?}, got {:?}",
+        keywords,
+        err
+    );
+    assert!(
+        matches!(
+            &err,
+            LlvmCodegenError::UnsupportedInstruction { .. }
+                | LlvmCodegenError::UnsupportedOperation { .. }
+                | LlvmCodegenError::UnsupportedType { .. }
+        ),
+        "expected unsupported LLVM codegen error, got {:?}",
+        err
+    );
+}
+
 #[test]
-fn basic_object_programs_emit_llvm() {
-    for case in OBJECT_CASES {
+fn vtable_programs_emit_llvm() {
+    for case in VTABLE_CASES {
         let llvm = emit_llvm_from_source(case.source)
             .unwrap_or_else(|err| panic!("{} should emit LLVM: {err}", case.name));
         assert!(
-            llvm.contains("declare ptr @hulk_alloc_object(i64, i64, ptr)"),
-            "{} should declare object allocation",
+            llvm.contains("%HulkVTable = type { i64, ptr, i64, ptr }"),
+            "{} should declare vtable type",
             case.name
         );
         assert!(
-            llvm.contains("define i32 @main()"),
-            "{} should emit a main wrapper",
+            llvm.contains("declare ptr @hulk_object_method(ptr, i64)"),
+            "{} should declare vtable lookup helper",
+            case.name
+        );
+        assert!(
+            llvm.contains("call ptr @hulk_object_method(ptr"),
+            "{} should use runtime vtable lookup",
             case.name
         );
     }
 }
 
 #[test]
-fn basic_object_programs_execute_with_clang_when_available() {
+fn vtable_programs_execute_with_clang_when_available() {
     if !clang_is_available() {
-        eprintln!("clang is not available; skipping LLVM object execution checks");
+        eprintln!("clang is not available; skipping LLVM vtable execution checks");
         return;
     }
 
-    for case in OBJECT_CASES {
+    for case in VTABLE_CASES {
         let llvm = emit_llvm_from_source(case.source)
             .unwrap_or_else(|err| panic!("{} should emit LLVM: {err}", case.name));
         let stdout = compile_and_run_llvm(&llvm)
@@ -259,4 +302,26 @@ fn basic_object_programs_execute_with_clang_when_available() {
             case.name
         );
     }
+}
+
+#[test]
+fn unsupported_vector_still_fails_cleanly() {
+    let err = codegen_error_from_source("let v = [1, 2, 3] in print(v[0]);");
+    assert_unsupported_error(err, &["unsupported", "newvector", "vector"]);
+}
+
+#[test]
+fn unsupported_closure_still_fails_cleanly() {
+    let err =
+        codegen_error_from_source("let f: (Number) -> Number = (x: Number) => x + 1 in f(4);");
+    assert_unsupported_error(err, &["unsupported", "closure"]);
+}
+
+#[test]
+fn unsupported_type_test_and_cast_still_fail_cleanly() {
+    let type_test = codegen_error_from_source("type A {}\nlet x: Object = new A() in x is A;");
+    assert_unsupported_error(type_test, &["unsupported", "typetest"]);
+
+    let type_cast = codegen_error_from_source("type A {}\nlet x: Object = new A() in x as A;");
+    assert_unsupported_error(type_cast, &["unsupported", "typecast"]);
 }

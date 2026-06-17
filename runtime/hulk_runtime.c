@@ -120,9 +120,12 @@ HulkString* hulk_string_from_bool(unsigned char value) {
     return hulk_string_copy_from_cstr(value ? "true" : "false");
 }
 
-HulkObject* hulk_alloc_object(long long type_id, long long attr_count) {
+HulkObject* hulk_alloc_object(long long type_id, long long attr_count, HulkVTable* vtable) {
     if (attr_count < 0) {
         hulk_runtime_error("object attribute count is negative");
+    }
+    if (vtable == NULL) {
+        hulk_runtime_error("object vtable is NULL");
     }
     if ((unsigned long long)attr_count > SIZE_MAX / sizeof(HulkValue)) {
         hulk_runtime_error("object attribute allocation size overflow");
@@ -134,6 +137,7 @@ HulkObject* hulk_alloc_object(long long type_id, long long attr_count) {
     }
 
     object->type_id = type_id;
+    object->vtable = vtable;
     object->attr_count = attr_count;
     object->attrs = calloc((size_t)attr_count, sizeof(HulkValue));
     if (attr_count > 0 && object->attrs == NULL) {
@@ -141,6 +145,25 @@ HulkObject* hulk_alloc_object(long long type_id, long long attr_count) {
         hulk_runtime_error("out of memory while allocating object attributes");
     }
     return object;
+}
+
+void* hulk_object_method(HulkObject* object, long long slot) {
+    if (object == NULL) {
+        hulk_runtime_error("object is NULL");
+    }
+    if (object->vtable == NULL) {
+        hulk_runtime_error("object vtable is NULL");
+    }
+    if (slot < 0 || slot >= object->vtable->method_count) {
+        hulk_runtime_error("object method slot out of range");
+    }
+    if (object->vtable->methods == NULL) {
+        hulk_runtime_error("object method table is NULL");
+    }
+    if (object->vtable->methods[slot] == NULL) {
+        hulk_runtime_error("object method slot is NULL");
+    }
+    return object->vtable->methods[slot];
 }
 
 void hulk_object_set_number(HulkObject* object, long long attr_id, double value) {

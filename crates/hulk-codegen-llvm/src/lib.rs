@@ -145,7 +145,8 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare ptr @hulk_string_from_number(double)\n");
         out.push_str("declare ptr @hulk_string_from_bool(i8)\n");
         out.push_str("declare void @hulk_runtime_error(ptr)\n");
-        out.push_str("declare ptr @hulk_alloc_object(i64, i64)\n");
+        out.push_str("declare ptr @hulk_alloc_object(i64, i64, ptr)\n");
+        out.push_str("declare ptr @hulk_object_method(ptr, i64)\n");
         out.push_str("declare void @hulk_object_set_number(ptr, i64, double)\n");
         out.push_str("declare void @hulk_object_set_bool(ptr, i64, i8)\n");
         out.push_str("declare void @hulk_object_set_string(ptr, i64, ptr)\n");
@@ -168,7 +169,8 @@ impl<'a> LlvmEmitter<'a> {
     }
 
     fn emit_data(&self, out: &mut String) -> Result<(), LlvmCodegenError> {
-        out.push_str("%HulkString = type { i64, ptr }\n\n");
+        out.push_str("%HulkString = type { i64, ptr }\n");
+        out.push_str("%HulkVTable = type { i64, ptr, i64, ptr }\n\n");
         for data in &self.program.data {
             match &data.value {
                 IrDataValue::String(value) => {
@@ -188,7 +190,44 @@ impl<'a> LlvmEmitter<'a> {
                 IrDataValue::Number(_) | IrDataValue::Boolean(_) => {}
             }
         }
+        self.emit_vtables(out)?;
         out.push('\n');
+        Ok(())
+    }
+
+    fn emit_vtables(&self, out: &mut String) -> Result<(), LlvmCodegenError> {
+        for ty in &self.program.types {
+            let methods_name = vtable_methods_global_name(&ty.name);
+            let vtable_name = vtable_global_name(&ty.name);
+            let method_refs = ty
+                .methods
+                .iter()
+                .map(|method| {
+                    let sig = self.signatures.get(&method.function).ok_or_else(|| {
+                        LlvmCodegenError::UnknownFunction {
+                            name: method.function.clone(),
+                        }
+                    })?;
+                    Ok(format!("ptr @{}", sig.llvm_name))
+                })
+                .collect::<Result<Vec<_>, LlvmCodegenError>>()?;
+            out.push_str(&format!(
+                "{methods_name} = private constant [{} x ptr] [{}]\n",
+                method_refs.len(),
+                method_refs.join(", ")
+            ));
+
+            let parent = ty
+                .parent
+                .as_ref()
+                .map(|parent| format!("ptr {}", vtable_global_name(parent)))
+                .unwrap_or_else(|| "ptr null".to_string());
+            out.push_str(&format!(
+                "{vtable_name} = private constant %HulkVTable {{ i64 {}, {parent}, i64 {}, ptr {methods_name} }}\n",
+                ty.id.0,
+                method_refs.len()
+            ));
+        }
         Ok(())
     }
 
@@ -372,9 +411,12 @@ impl<'a> FunctionEmitter<'a> {
                 function,
                 args,
             } => self.emit_static_call(*dst, function, args),
-            IrInstr::BaseCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "BaseCall",
-            }),
+            IrInstr::BaseCall {
+                dst,
+                parent_type,
+                method,
+                args,
+            } => self.emit_base_call(*dst, parent_type, method, args),
             IrInstr::NewVector { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
                 instruction: "NewVector",
             }),
@@ -628,14 +670,6 @@ impl<'a> FunctionEmitter<'a> {
                 .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
                     message: format!("cannot allocate unknown type '{type_name}'"),
                 })?;
-        if ty.parent.is_some() {
-            return Err(LlvmCodegenError::UnsupportedOperation {
-                message: format!(
-                    "LLVM object backend does not support inheritance for '{type_name}'"
-                ),
-            });
-        }
-
         let dst_ty = self.place_type(dst)?;
         match &dst_ty {
             IrTypeRef::User(name) if name == type_name => {}
@@ -649,10 +683,13 @@ impl<'a> FunctionEmitter<'a> {
         }
 
         let result = self.next_name("obj");
+        // Basic inheritance uses a flat attribute layout. Child layouts already include
+        // inherited attributes, so one allocation with the total count is enough here.
         self.lines.push(format!(
-            "  {result} = call ptr @hulk_alloc_object(i64 {}, i64 {})",
+            "  {result} = call ptr @hulk_alloc_object(i64 {}, i64 {}, ptr {})",
             ty.id.0,
-            ty.attributes.len()
+            ty.attributes.len(),
+            vtable_global_name(type_name)
         ));
         self.store_operand(dst, &dst_ty, &result)
     }
@@ -765,7 +802,7 @@ impl<'a> FunctionEmitter<'a> {
     fn emit_virtual_call(
         &mut self,
         dst: Option<IrPlace>,
-        _receiver: &IrValue,
+        receiver: &IrValue,
         receiver_static_type: &str,
         method: &str,
         slot: u32,
@@ -778,26 +815,66 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             }
         })?;
-        if ty.parent.is_some() {
+
+        let method_fn = self.resolve_method_function(ty, method, slot)?;
+        let sig = self.signatures.get(&method_fn).cloned().ok_or_else(|| {
+            LlvmCodegenError::UnknownFunction {
+                name: method_fn.clone(),
+            }
+        })?;
+        if sig.params.len() != args.len() {
             return Err(LlvmCodegenError::UnsupportedOperation {
                 message: format!(
-                    "LLVM object backend does not support virtual dispatch with inheritance for '{receiver_static_type}'"
+                    "method '{receiver_static_type}.{method}' expects {} arguments, got {}",
+                    sig.params.len(),
+                    args.len()
                 ),
             });
         }
 
-        let method_fn = ty
-            .methods
-            .iter()
-            .find(|candidate| candidate.name == method)
-            .or_else(|| ty.methods.iter().find(|candidate| candidate.slot.0 == slot))
-            .map(|candidate| candidate.function.clone())
-            .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
-                message: format!(
-                    "cannot resolve method '{method}' on concrete type '{receiver_static_type}'"
-                ),
-            })?;
+        let receiver = self.read_object_ptr(receiver)?;
+        let function_ptr = self.next_name("vmethod");
+        // VirtualCall uses the receiver's runtime vtable. The args list already includes
+        // self as its first argument, so the indirect call must not add it again.
+        self.lines.push(format!(
+            "  {function_ptr} = call ptr @hulk_object_method(ptr {receiver}, i64 {slot})"
+        ));
 
+        let mut rendered_args = Vec::new();
+        for (arg, expected_ty) in args.iter().zip(&sig.params) {
+            let arg = self.read_value_as(arg, expected_ty)?;
+            rendered_args.push(format!("{} {}", llvm_type(expected_ty)?, arg.operand));
+        }
+        let ret_ty = llvm_type(&sig.ret)?;
+        let call = format!("call {ret_ty} {function_ptr}({})", rendered_args.join(", "));
+        if let Some(dst) = dst {
+            let result = self.next_name("vcall");
+            self.lines.push(format!("  {result} = {call}"));
+            self.store_operand(dst, &sig.ret, &result)?;
+        } else {
+            self.lines.push(format!("  {call}"));
+        }
+
+        Ok(())
+    }
+
+    fn emit_base_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        parent_type: &str,
+        method: &str,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let ty =
+            self.types
+                .get(parent_type)
+                .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
+                    message: format!(
+                        "cannot emit base call '{method}' for unknown parent type '{parent_type}'"
+                    ),
+                })?;
+        // base() stays a direct parent call; it deliberately bypasses vtable dispatch.
+        let method_fn = self.resolve_method_function(ty, method, 0)?;
         self.emit_user_call(dst, &method_fn, args)
     }
 
@@ -1228,14 +1305,58 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    fn resolve_method_function(
+        &self,
+        ty: &IrType,
+        method: &str,
+        slot: u32,
+    ) -> Result<String, LlvmCodegenError> {
+        ty.methods
+            .iter()
+            .find(|candidate| candidate.name == method)
+            .or_else(|| ty.methods.iter().find(|candidate| candidate.slot.0 == slot))
+            .map(|candidate| candidate.function.clone())
+            .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
+                message: format!(
+                    "cannot resolve method '{method}' on concrete type '{}'",
+                    ty.name
+                ),
+            })
+    }
+
+    fn is_descendant_of(&self, child: &str, ancestor: &str) -> bool {
+        let mut current = self.types.get(child).and_then(|ty| ty.parent.as_deref());
+        while let Some(name) = current {
+            if name == ancestor {
+                return true;
+            }
+            current = self.types.get(name).and_then(|ty| ty.parent.as_deref());
+        }
+        false
+    }
+
     fn ensure_type(&self, expected: &IrTypeRef, found: &IrTypeRef) -> Result<(), LlvmCodegenError> {
-        if expected == found {
+        if self.is_assignable_to(expected, found) {
             Ok(())
         } else {
             Err(LlvmCodegenError::TypeMismatch {
                 expected: expected.clone(),
                 found: found.clone(),
             })
+        }
+    }
+
+    fn is_assignable_to(&self, expected: &IrTypeRef, found: &IrTypeRef) -> bool {
+        if expected == found {
+            return true;
+        }
+
+        match (expected, found) {
+            (IrTypeRef::Object, IrTypeRef::User(_)) => true,
+            (IrTypeRef::User(expected), IrTypeRef::User(found)) => {
+                self.is_descendant_of(found, expected)
+            }
+            _ => false,
         }
     }
 
@@ -1271,6 +1392,14 @@ fn sanitize_symbol(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn vtable_global_name(type_name: &str) -> String {
+    format!("@{}_vtable", sanitize_symbol(type_name))
+}
+
+fn vtable_methods_global_name(type_name: &str) -> String {
+    format!("@{}_vtable_methods", sanitize_symbol(type_name))
 }
 
 fn llvm_type(ty: &IrTypeRef) -> Result<&'static str, LlvmCodegenError> {
