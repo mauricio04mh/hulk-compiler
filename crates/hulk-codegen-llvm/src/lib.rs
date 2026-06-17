@@ -1,6 +1,6 @@
 use hulk_ir::{
     DataId, FunctionId, IrBinaryOp, IrData, IrDataValue, IrFunction, IrInstr, IrPlace, IrProgram,
-    IrTypeRef, IrUnaryOp, IrValue, LabelId, LocalId, ParamId, TempId,
+    IrType, IrTypeRef, IrUnaryOp, IrValue, LabelId, LocalId, ParamId, TempId,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -79,6 +79,7 @@ struct LlvmEmitter<'a> {
     program: &'a IrProgram,
     signatures: HashMap<String, FunctionSig>,
     data: HashMap<DataId, &'a IrData>,
+    types: HashMap<String, &'a IrType>,
 }
 
 impl<'a> LlvmEmitter<'a> {
@@ -103,10 +104,16 @@ impl<'a> LlvmEmitter<'a> {
             .iter()
             .map(|item| (item.id, item))
             .collect::<HashMap<_, _>>();
+        let types = program
+            .types
+            .iter()
+            .map(|item| (item.name.clone(), item))
+            .collect::<HashMap<_, _>>();
         Self {
             program,
             signatures,
             data,
+            types,
         }
     }
 
@@ -134,11 +141,25 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare double @hulk_pow(double, double)\n");
         out.push_str("declare double @hulk_rand()\n");
         out.push_str("declare void @hulk_print_string(ptr)\n");
+        out.push_str("declare ptr @hulk_string_concat(ptr, ptr)\n");
+        out.push_str("declare ptr @hulk_string_from_number(double)\n");
+        out.push_str("declare ptr @hulk_string_from_bool(i8)\n");
+        out.push_str("declare void @hulk_runtime_error(ptr)\n");
+        out.push_str("declare ptr @hulk_alloc_object(i64, i64)\n");
+        out.push_str("declare void @hulk_object_set_number(ptr, i64, double)\n");
+        out.push_str("declare void @hulk_object_set_bool(ptr, i64, i8)\n");
+        out.push_str("declare void @hulk_object_set_string(ptr, i64, ptr)\n");
+        out.push_str("declare void @hulk_object_set_object(ptr, i64, ptr)\n");
+        out.push_str("declare double @hulk_object_get_number(ptr, i64)\n");
+        out.push_str("declare i8 @hulk_object_get_bool(ptr, i64)\n");
+        out.push_str("declare ptr @hulk_object_get_string(ptr, i64)\n");
+        out.push_str("declare ptr @hulk_object_get_object(ptr, i64)\n");
         out.push('\n');
         self.emit_data(&mut out)?;
 
         for function in &self.program.functions {
-            FunctionEmitter::new(function, &self.signatures, &self.data).emit(&mut out)?;
+            FunctionEmitter::new(function, &self.signatures, &self.data, &self.types)
+                .emit(&mut out)?;
             out.push('\n');
         }
 
@@ -197,6 +218,7 @@ struct FunctionEmitter<'a> {
     function: &'a IrFunction,
     signatures: &'a HashMap<String, FunctionSig>,
     data: &'a HashMap<DataId, &'a IrData>,
+    types: &'a HashMap<String, &'a IrType>,
     local_types: HashMap<LocalId, IrTypeRef>,
     temp_types: HashMap<TempId, IrTypeRef>,
     param_types: HashMap<ParamId, IrTypeRef>,
@@ -210,6 +232,7 @@ impl<'a> FunctionEmitter<'a> {
         function: &'a IrFunction,
         signatures: &'a HashMap<String, FunctionSig>,
         data: &'a HashMap<DataId, &'a IrData>,
+        types: &'a HashMap<String, &'a IrType>,
     ) -> Self {
         let local_types = function
             .locals
@@ -231,6 +254,7 @@ impl<'a> FunctionEmitter<'a> {
             function,
             signatures,
             data,
+            types,
             local_types,
             temp_types,
             param_types,
@@ -328,21 +352,26 @@ impl<'a> FunctionEmitter<'a> {
                 args,
             } => self.emit_call(*dst, function, args),
             IrInstr::Return(value) => self.emit_return(value.as_ref()),
-            IrInstr::Allocate { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "Allocate",
-            }),
-            IrInstr::GetAttr { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "GetAttr",
-            }),
-            IrInstr::SetAttr { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "SetAttr",
-            }),
-            IrInstr::VirtualCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "VirtualCall",
-            }),
-            IrInstr::StaticCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "StaticCall",
-            }),
+            IrInstr::Allocate { dst, type_name } => self.emit_allocate(*dst, type_name),
+            IrInstr::GetAttr { dst, object, attr } => self.emit_get_attr(*dst, object, attr.0),
+            IrInstr::SetAttr {
+                object,
+                attr,
+                value,
+            } => self.emit_set_attr(object, attr.0, value),
+            IrInstr::VirtualCall {
+                dst,
+                receiver,
+                receiver_static_type,
+                method,
+                slot,
+                args,
+            } => self.emit_virtual_call(*dst, receiver, receiver_static_type, method, slot.0, args),
+            IrInstr::StaticCall {
+                dst,
+                function,
+                args,
+            } => self.emit_static_call(*dst, function, args),
             IrInstr::BaseCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
                 instruction: "BaseCall",
             }),
@@ -435,9 +464,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_bool_binary(dst, op, left, right, &dst_ty)
             }
             IrBinaryOp::Concat | IrBinaryOp::ConcatSpace => {
-                Err(LlvmCodegenError::UnsupportedInstruction {
-                    instruction: "StringConcat",
-                })
+                self.emit_string_concat(dst, left, right)
             }
         }
     }
@@ -592,6 +619,209 @@ impl<'a> FunctionEmitter<'a> {
             left.operand, right.operand
         ));
         self.store_operand(dst, dst_ty, &name)
+    }
+
+    fn emit_allocate(&mut self, dst: IrPlace, type_name: &str) -> Result<(), LlvmCodegenError> {
+        let ty =
+            self.types
+                .get(type_name)
+                .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
+                    message: format!("cannot allocate unknown type '{type_name}'"),
+                })?;
+        if ty.parent.is_some() {
+            return Err(LlvmCodegenError::UnsupportedOperation {
+                message: format!(
+                    "LLVM object backend does not support inheritance for '{type_name}'"
+                ),
+            });
+        }
+
+        let dst_ty = self.place_type(dst)?;
+        match &dst_ty {
+            IrTypeRef::User(name) if name == type_name => {}
+            IrTypeRef::Object => {}
+            other => {
+                return Err(LlvmCodegenError::TypeMismatch {
+                    expected: IrTypeRef::User(type_name.to_string()),
+                    found: other.clone(),
+                });
+            }
+        }
+
+        let result = self.next_name("obj");
+        self.lines.push(format!(
+            "  {result} = call ptr @hulk_alloc_object(i64 {}, i64 {})",
+            ty.id.0,
+            ty.attributes.len()
+        ));
+        self.store_operand(dst, &dst_ty, &result)
+    }
+
+    fn emit_set_attr(
+        &mut self,
+        object: &IrValue,
+        attr_id: u32,
+        value: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let object = self.read_object_ptr(object)?;
+        let attr_id = attr_id as u64;
+        match self.value_type(value)? {
+            IrTypeRef::Number => {
+                let value = self.read_value_as(value, &IrTypeRef::Number)?;
+                self.lines.push(format!(
+                    "  call void @hulk_object_set_number(ptr {object}, i64 {attr_id}, double {})",
+                    value.operand
+                ));
+            }
+            IrTypeRef::Boolean => {
+                let value = self.read_value_as(value, &IrTypeRef::Boolean)?;
+                let widened = self.next_name("bool8");
+                self.lines
+                    .push(format!("  {widened} = zext i1 {} to i8", value.operand));
+                self.lines.push(format!(
+                    "  call void @hulk_object_set_bool(ptr {object}, i64 {attr_id}, i8 {widened})"
+                ));
+            }
+            IrTypeRef::String => {
+                let value = self.read_value_as(value, &IrTypeRef::String)?;
+                self.lines.push(format!(
+                    "  call void @hulk_object_set_string(ptr {object}, i64 {attr_id}, ptr {})",
+                    value.operand
+                ));
+            }
+            IrTypeRef::Object | IrTypeRef::User(_) => {
+                let value = self.read_object_ptr(value)?;
+                self.lines.push(format!(
+                    "  call void @hulk_object_set_object(ptr {object}, i64 {attr_id}, ptr {value})"
+                ));
+            }
+            other => {
+                return Err(LlvmCodegenError::UnsupportedOperation {
+                    message: format!("cannot store attribute value of type {other}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_get_attr(
+        &mut self,
+        dst: IrPlace,
+        object: &IrValue,
+        attr_id: u32,
+    ) -> Result<(), LlvmCodegenError> {
+        let object = self.read_object_ptr(object)?;
+        let attr_id = attr_id as u64;
+        let dst_ty = self.place_type(dst)?;
+        match &dst_ty {
+            IrTypeRef::Number => {
+                let result = self.next_name("attrnum");
+                self.lines.push(format!(
+                    "  {result} = call double @hulk_object_get_number(ptr {object}, i64 {attr_id})"
+                ));
+                self.store_operand(dst, &dst_ty, &result)?;
+            }
+            IrTypeRef::Boolean => {
+                let raw = self.next_name("attrbool8");
+                self.lines.push(format!(
+                    "  {raw} = call i8 @hulk_object_get_bool(ptr {object}, i64 {attr_id})"
+                ));
+                let result = self.next_name("attrbool");
+                self.lines.push(format!("  {result} = icmp ne i8 {raw}, 0"));
+                self.store_operand(dst, &dst_ty, &result)?;
+            }
+            IrTypeRef::String => {
+                let result = self.next_name("attrstr");
+                self.lines.push(format!(
+                    "  {result} = call ptr @hulk_object_get_string(ptr {object}, i64 {attr_id})"
+                ));
+                self.store_operand(dst, &dst_ty, &result)?;
+            }
+            IrTypeRef::Object | IrTypeRef::User(_) => {
+                let result = self.next_name("attrobj");
+                self.lines.push(format!(
+                    "  {result} = call ptr @hulk_object_get_object(ptr {object}, i64 {attr_id})"
+                ));
+                self.store_operand(dst, &dst_ty, &result)?;
+            }
+            other => {
+                return Err(LlvmCodegenError::UnsupportedOperation {
+                    message: format!("cannot load attribute as type {other}"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_static_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        function: &str,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        self.emit_user_call(dst, function, args)
+    }
+
+    fn emit_virtual_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        _receiver: &IrValue,
+        receiver_static_type: &str,
+        method: &str,
+        slot: u32,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let ty = self.types.get(receiver_static_type).ok_or_else(|| {
+            LlvmCodegenError::UnsupportedOperation {
+                message: format!(
+                    "cannot emit virtual call '{method}' for non-concrete receiver type '{receiver_static_type}'"
+                ),
+            }
+        })?;
+        if ty.parent.is_some() {
+            return Err(LlvmCodegenError::UnsupportedOperation {
+                message: format!(
+                    "LLVM object backend does not support virtual dispatch with inheritance for '{receiver_static_type}'"
+                ),
+            });
+        }
+
+        let method_fn = ty
+            .methods
+            .iter()
+            .find(|candidate| candidate.name == method)
+            .or_else(|| ty.methods.iter().find(|candidate| candidate.slot.0 == slot))
+            .map(|candidate| candidate.function.clone())
+            .ok_or_else(|| LlvmCodegenError::UnsupportedOperation {
+                message: format!(
+                    "cannot resolve method '{method}' on concrete type '{receiver_static_type}'"
+                ),
+            })?;
+
+        self.emit_user_call(dst, &method_fn, args)
+    }
+
+    fn emit_string_concat(
+        &mut self,
+        dst: IrPlace,
+        left: &IrValue,
+        right: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let dst_ty = self.place_type(dst)?;
+        if dst_ty != IrTypeRef::String {
+            return Err(LlvmCodegenError::TypeMismatch {
+                expected: IrTypeRef::String,
+                found: dst_ty,
+            });
+        }
+
+        let left = self.read_value_as_string(left)?;
+        let right = self.read_value_as_string(right)?;
+        let result = self.next_name("concat");
+        self.lines.push(format!(
+            "  {result} = call ptr @hulk_string_concat(ptr {left}, ptr {right})"
+        ));
+        self.store_operand(dst, &IrTypeRef::String, &result)
     }
 
     fn emit_call(
@@ -849,6 +1079,50 @@ impl<'a> FunctionEmitter<'a> {
                 ty: expected_ty.clone(),
             }),
             IrValue::DataRef(id) => self.read_data_ref(*id, expected_ty),
+        }
+    }
+
+    fn read_value_as_string(&mut self, value: &IrValue) -> Result<String, LlvmCodegenError> {
+        match self.value_type(value)? {
+            IrTypeRef::String => {
+                let value = self.read_value_as(value, &IrTypeRef::String)?;
+                Ok(value.operand)
+            }
+            IrTypeRef::Number => {
+                let value = self.read_value_as(value, &IrTypeRef::Number)?;
+                let result = self.next_name("strnum");
+                self.lines.push(format!(
+                    "  {result} = call ptr @hulk_string_from_number(double {})",
+                    value.operand
+                ));
+                Ok(result)
+            }
+            IrTypeRef::Boolean => {
+                let value = self.read_value_as(value, &IrTypeRef::Boolean)?;
+                let widened = self.next_name("bool8");
+                self.lines
+                    .push(format!("  {widened} = zext i1 {} to i8", value.operand));
+                let result = self.next_name("strbool");
+                self.lines.push(format!(
+                    "  {result} = call ptr @hulk_string_from_bool(i8 {widened})"
+                ));
+                Ok(result)
+            }
+            other => Err(LlvmCodegenError::UnsupportedOperation {
+                message: format!("cannot concatenate value of type {other} as a string"),
+            }),
+        }
+    }
+
+    fn read_object_ptr(&mut self, value: &IrValue) -> Result<String, LlvmCodegenError> {
+        match self.value_type(value)? {
+            ty @ (IrTypeRef::Object | IrTypeRef::User(_)) => {
+                let value = self.read_value_as(value, &ty)?;
+                Ok(value.operand)
+            }
+            other => Err(LlvmCodegenError::UnsupportedOperation {
+                message: format!("expected object pointer, found {other}"),
+            }),
         }
     }
 
