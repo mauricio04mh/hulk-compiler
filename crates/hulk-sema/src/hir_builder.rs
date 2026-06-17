@@ -38,6 +38,8 @@ pub struct HirBuilder {
     current_type: Option<String>,
     current_type_parent: Option<String>,
     current_method: Option<String>,
+    current_function: Option<String>,
+    current_function_param_indices: HashMap<SymbolId, usize>,
     next_hir_id: u32,
     next_symbol_id: u32,
 }
@@ -52,6 +54,8 @@ impl HirBuilder {
             current_type: None,
             current_type_parent: None,
             current_method: None,
+            current_function: None,
+            current_function_param_indices: HashMap::new(),
             next_hir_id: 0,
             next_symbol_id: 0,
         }
@@ -132,6 +136,65 @@ impl HirBuilder {
             .find_map(|scope| scope.get(name).cloned())
     }
 
+    fn resolve_symbol_mut(&mut self, name: &str) -> Option<&mut SymbolInfo> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(symbol) = scope.get_mut(name) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+
+    fn constrain_expr_type(&mut self, expr: &Expr, expected: &Type) {
+        if *expected == Type::Unknown {
+            return;
+        }
+
+        let Expr::Var(name, _) = expr else {
+            return;
+        };
+
+        let Some(symbol) = self.resolve_symbol(name) else {
+            return;
+        };
+        if !matches!(symbol.kind, SymbolKind::Parameter) {
+            return;
+        }
+
+        let Some(current_function) = self.current_function.clone() else {
+            return;
+        };
+        let Some(&idx) = self.current_function_param_indices.get(&symbol.id) else {
+            return;
+        };
+
+        let current_ty = self
+            .functions
+            .get(&current_function)
+            .and_then(|signature| signature.params.get(idx))
+            .cloned()
+            .unwrap_or(Type::Unknown);
+
+        if current_ty == Type::Unknown {
+            if let Some(signature) = self.functions.get_mut(&current_function) {
+                if idx < signature.params.len() {
+                    signature.params[idx] = expected.clone();
+                }
+            }
+            if let Some(symbol_mut) = self.resolve_symbol_mut(name) {
+                symbol_mut.ty = expected.clone();
+            }
+            return;
+        }
+
+        if current_ty != *expected {
+            self.errors.push(SemanticError::TypeMismatch {
+                expected: current_ty,
+                found: expected.clone(),
+            });
+        }
+    }
+
     fn new_hir_id(&mut self) -> HirId {
         let id = HirId(self.next_hir_id);
         self.next_hir_id += 1;
@@ -175,7 +238,17 @@ impl HirBuilder {
         let params = func
             .params
             .iter()
-            .map(|param| self.parameter_type(param, &func.name))
+            .map(|param| {
+                param
+                    .ty
+                    .as_ref()
+                    .map(Type::from_type_ref)
+                    .map(|ty| {
+                        self.validate_user_type(&ty);
+                        ty
+                    })
+                    .unwrap_or(Type::Unknown)
+            })
             .collect();
 
         let return_type = if let Some(ret_ref) = &func.return_type {
@@ -205,11 +278,14 @@ impl HirBuilder {
                 return_type: Type::Unknown,
             });
 
+        self.current_function = Some(func.name.clone());
+        self.current_function_param_indices.clear();
         self.push_scope();
         let mut params = Vec::new();
         for (idx, param) in func.params.iter().enumerate() {
             let ty = signature.params.get(idx).cloned().unwrap_or(Type::Unknown);
             let symbol = self.define_symbol(param.name.clone(), ty.clone(), SymbolKind::Parameter);
+            self.current_function_param_indices.insert(symbol.id, idx);
             params.push(HirParam {
                 name: param.name.clone(),
                 ty,
@@ -219,7 +295,20 @@ impl HirBuilder {
         }
 
         let body = self.analyze_expr(&func.body);
+        for param in &mut params {
+            if let Some(symbol) = self.resolve_symbol(&param.name) {
+                param.ty = symbol.ty.clone();
+            }
+            if param.ty == Type::Unknown {
+                self.errors.push(SemanticError::CannotInferParameterType {
+                    function: func.name.clone(),
+                    parameter: param.name.clone(),
+                });
+            }
+        }
         self.pop_scope();
+        self.current_function = None;
+        self.current_function_param_indices.clear();
 
         let return_type = if let Some(ret_ref) = &func.return_type {
             let declared = Type::from_type_ref(ret_ref);
@@ -456,6 +545,8 @@ impl HirBuilder {
             let ty = Type::from_type_ref(ty_ref);
             self.validate_user_type(&ty);
             ty
+        } else if self.current_function.as_deref() == Some(owner) {
+            Type::Unknown
         } else {
             self.errors.push(SemanticError::CannotInferParameterType {
                 function: owner.to_string(),
@@ -626,7 +717,16 @@ impl HirBuilder {
         let hir_expr = self.analyze_expr(expr);
         let found = hir_expr.ty.clone();
         let ty = if found == Type::Unknown {
-            Type::Unknown
+            match op {
+                UnaryOp::Not => {
+                    self.constrain_expr_type(expr, &Type::Boolean);
+                    Type::Boolean
+                }
+                UnaryOp::Neg | UnaryOp::Pos => {
+                    self.constrain_expr_type(expr, &Type::Number);
+                    Type::Number
+                }
+            }
         } else {
             match op {
                 UnaryOp::Not => {
@@ -669,43 +769,19 @@ impl HirBuilder {
         let right_hir = self.analyze_expr(right);
         let left_ty = left_hir.ty.clone();
         let right_ty = right_hir.ty.clone();
-        let ty = self.binary_result_type(op, left_ty, right_ty);
-
-        self.make_expr(
-            span,
-            ty,
-            HirExprKind::Binary {
-                op: op.clone(),
-                left: Box::new(left_hir),
-                right: Box::new(right_hir),
-            },
-        )
-    }
-
-    fn binary_result_type(&mut self, op: &BinaryOp, left_ty: Type, right_ty: Type) -> Type {
-        if left_ty == Type::Unknown || right_ty == Type::Unknown {
-            return match op {
-                BinaryOp::Eq
-                | BinaryOp::Neq
-                | BinaryOp::Lt
-                | BinaryOp::Le
-                | BinaryOp::Gt
-                | BinaryOp::Ge
-                | BinaryOp::And
-                | BinaryOp::Or => Type::Boolean,
-                _ => Type::Unknown,
-            };
-        }
-
-        match op {
+        let ty = match op {
             BinaryOp::Add
             | BinaryOp::Sub
             | BinaryOp::Mul
             | BinaryOp::Div
             | BinaryOp::Mod
             | BinaryOp::Pow => {
-                if left_ty == Type::Number && right_ty == Type::Number {
+                let left_ok = self.constrain_numeric_operand(left, &left_ty);
+                let right_ok = self.constrain_numeric_operand(right, &right_ty);
+                if left_ok && right_ok {
                     Type::Number
+                } else if left_ty == Type::Unknown || right_ty == Type::Unknown {
+                    Type::Unknown
                 } else {
                     self.errors.push(SemanticError::InvalidBinaryOperands {
                         op: op.clone(),
@@ -716,8 +792,12 @@ impl HirBuilder {
                 }
             }
             BinaryOp::Concat | BinaryOp::ConcatSpace => {
-                if is_concat_compatible(&left_ty) && is_concat_compatible(&right_ty) {
+                let left_ok = self.constrain_concat_operand(left, &left_ty);
+                let right_ok = self.constrain_concat_operand(right, &right_ty);
+                if left_ok && right_ok {
                     Type::String
+                } else if left_ty == Type::Unknown || right_ty == Type::Unknown {
+                    Type::Unknown
                 } else {
                     self.errors.push(SemanticError::InvalidBinaryOperands {
                         op: op.clone(),
@@ -731,7 +811,7 @@ impl HirBuilder {
                 let compatible = left_ty == right_ty
                     || self.is_assignable(&left_ty, &right_ty)
                     || self.is_assignable(&right_ty, &left_ty);
-                if !compatible {
+                if !compatible && left_ty != Type::Unknown && right_ty != Type::Unknown {
                     self.errors.push(SemanticError::TypeMismatch {
                         expected: left_ty,
                         found: right_ty,
@@ -740,30 +820,42 @@ impl HirBuilder {
                 Type::Boolean
             }
             BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                if left_ty == Type::Number && right_ty == Type::Number {
-                    Type::Boolean
-                } else {
+                let left_ok = self.constrain_numeric_operand(left, &left_ty);
+                let right_ok = self.constrain_numeric_operand(right, &right_ty);
+                if (!left_ok || !right_ok) && left_ty != Type::Unknown && right_ty != Type::Unknown
+                {
                     self.errors.push(SemanticError::InvalidBinaryOperands {
                         op: op.clone(),
                         left: left_ty,
                         right: right_ty,
                     });
-                    Type::Boolean
                 }
+                Type::Boolean
             }
             BinaryOp::And | BinaryOp::Or => {
-                if left_ty == Type::Boolean && right_ty == Type::Boolean {
-                    Type::Boolean
-                } else {
+                let left_ok = self.constrain_boolean_operand(left, &left_ty);
+                let right_ok = self.constrain_boolean_operand(right, &right_ty);
+                if (!left_ok || !right_ok) && left_ty != Type::Unknown && right_ty != Type::Unknown
+                {
                     self.errors.push(SemanticError::InvalidBinaryOperands {
                         op: op.clone(),
                         left: left_ty,
                         right: right_ty,
                     });
-                    Type::Boolean
                 }
+                Type::Boolean
             }
-        }
+        };
+
+        self.make_expr(
+            span,
+            ty,
+            HirExprKind::Binary {
+                op: op.clone(),
+                left: Box::new(left_hir),
+                right: Box::new(right_hir),
+            },
+        )
     }
 
     fn analyze_assign(&mut self, span: Span, target: &Expr, value: &Expr) -> HirExpr {
@@ -772,6 +864,9 @@ impl HirBuilder {
         let target = match target {
             Expr::Var(name, _) => match self.resolve_symbol(name) {
                 Some(symbol) => {
+                    if symbol.ty == Type::Unknown && value_hir.ty != Type::Unknown {
+                        self.constrain_expr_type(target, &value_hir.ty);
+                    }
                     if !self.is_assignable(&value_hir.ty, &symbol.ty) {
                         self.errors.push(SemanticError::TypeMismatch {
                             expected: symbol.ty.clone(),
@@ -1958,6 +2053,33 @@ impl HirBuilder {
             return true;
         }
         matches!((a, b), (Type::UserType(_), Type::UserType(_)))
+    }
+
+    fn constrain_numeric_operand(&mut self, expr: &Expr, actual: &Type) -> bool {
+        if *actual == Type::Unknown {
+            self.constrain_expr_type(expr, &Type::Number);
+            matches!(expr, Expr::Var(_, _))
+        } else {
+            *actual == Type::Number
+        }
+    }
+
+    fn constrain_boolean_operand(&mut self, expr: &Expr, actual: &Type) -> bool {
+        if *actual == Type::Unknown {
+            self.constrain_expr_type(expr, &Type::Boolean);
+            matches!(expr, Expr::Var(_, _))
+        } else {
+            *actual == Type::Boolean
+        }
+    }
+
+    fn constrain_concat_operand(&mut self, expr: &Expr, actual: &Type) -> bool {
+        if *actual == Type::Unknown {
+            self.constrain_expr_type(expr, &Type::String);
+            matches!(expr, Expr::Var(_, _))
+        } else {
+            is_concat_compatible(actual)
+        }
     }
 }
 

@@ -99,6 +99,11 @@ fn case_k_function_return_inference() {
 
 #[test]
 fn case_l_parameter_without_type() {
+    check_ok("function f(x) => x + 1;\n\nf(1);");
+}
+
+#[test]
+fn case_l_unconstrained_parameter_still_fails() {
     let err = check_err("function f(x) => x;\n\nf(1);");
     assert!(matches!(
         err,
