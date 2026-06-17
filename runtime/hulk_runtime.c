@@ -107,6 +107,22 @@ HulkString* hulk_string_concat(HulkString* left, HulkString* right) {
     return string;
 }
 
+unsigned char hulk_string_equals(HulkString* left, HulkString* right) {
+    if (left == NULL || right == NULL) {
+        return left == right;
+    }
+    if (left->data == NULL || right->data == NULL) {
+        return left->data == right->data;
+    }
+    if (left->len != right->len) {
+        return 0;
+    }
+    if (left->len < 0) {
+        hulk_runtime_error("string length is negative");
+    }
+    return memcmp(left->data, right->data, (size_t)left->len) == 0;
+}
+
 HulkString* hulk_string_from_number(double value) {
     char buffer[64];
     int written = snprintf(buffer, sizeof(buffer), "%.15g", value);
@@ -164,6 +180,30 @@ void* hulk_object_method(HulkObject* object, long long slot) {
         hulk_runtime_error("object method slot is NULL");
     }
     return object->vtable->methods[slot];
+}
+
+unsigned char hulk_object_is(HulkObject* object, long long target_type_id) {
+    if (object == NULL) {
+        hulk_runtime_error("object is NULL");
+    }
+
+    HulkVTable* current = object->vtable;
+    while (current != NULL) {
+        if (current->type_id == target_type_id) {
+            return 1;
+        }
+        current = current->parent;
+    }
+    return 0;
+}
+
+HulkObject* hulk_object_as(HulkObject* object, long long target_type_id) {
+    if (hulk_object_is(object, target_type_id)) {
+        return object;
+    }
+
+    hulk_runtime_error("invalid type cast");
+    return NULL;
 }
 
 void hulk_object_set_number(HulkObject* object, long long attr_id, double value) {

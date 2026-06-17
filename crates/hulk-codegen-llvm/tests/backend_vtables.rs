@@ -1,6 +1,9 @@
 use hulk_codegen_llvm::{LlvmCodegenError, emit_llvm};
 use hulk_frontend::parse_hulk_types_program;
-use hulk_ir::IrProgram;
+use hulk_ir::{
+    FunctionId, IrFunction, IrFunctionKind, IrInstr, IrMethod, IrProgram, IrType, IrTypeRef,
+    IrValue, MethodSlot, TypeId,
+};
 use hulk_lower::lower_program;
 use hulk_sema::analyze_program;
 use std::error::Error;
@@ -260,6 +263,48 @@ fn assert_unsupported_error(err: LlvmCodegenError, keywords: &[&str]) {
     );
 }
 
+fn vtable_slot_program(methods: Vec<IrMethod>) -> IrProgram {
+    let mut functions = vec![IrFunction {
+        id: FunctionId(0),
+        name: "entry".to_string(),
+        kind: IrFunctionKind::Entry,
+        params: vec![],
+        locals: vec![],
+        temps: vec![],
+        return_type: IrTypeRef::Number,
+        body: vec![IrInstr::Return(Some(IrValue::ConstNumber(0.0)))],
+    }];
+
+    for (index, method) in methods.iter().enumerate() {
+        functions.push(IrFunction {
+            id: FunctionId(index as u32 + 1),
+            name: method.function.clone(),
+            kind: IrFunctionKind::Method {
+                owner_type: "Widget".to_string(),
+                method_name: method.name.clone(),
+            },
+            params: vec![],
+            locals: vec![],
+            temps: vec![],
+            return_type: IrTypeRef::Number,
+            body: vec![IrInstr::Return(Some(IrValue::ConstNumber(index as f64)))],
+        });
+    }
+
+    IrProgram {
+        types: vec![IrType {
+            id: TypeId(0),
+            name: "Widget".to_string(),
+            parent: None,
+            attributes: vec![],
+            methods,
+        }],
+        data: vec![],
+        functions,
+        entry: FunctionId(0),
+    }
+}
+
 #[test]
 fn vtable_programs_emit_llvm() {
     for case in VTABLE_CASES {
@@ -280,6 +325,47 @@ fn vtable_programs_emit_llvm() {
             "{} should use runtime vtable lookup",
             case.name
         );
+    }
+}
+
+#[test]
+fn vtable_methods_are_emitted_in_slot_order() {
+    let program = vtable_slot_program(vec![
+        IrMethod {
+            slot: MethodSlot(1),
+            name: "second".to_string(),
+            function: "Widget_second".to_string(),
+        },
+        IrMethod {
+            slot: MethodSlot(0),
+            name: "first".to_string(),
+            function: "Widget_first".to_string(),
+        },
+    ]);
+
+    let llvm = emit_llvm(&program).expect("codegen should pass");
+    assert!(llvm.contains(
+        "@Widget_vtable_methods = private constant [2 x ptr] [ptr @Widget_first, ptr @Widget_second]"
+    ));
+}
+
+#[test]
+fn non_contiguous_vtable_slots_fail_cleanly() {
+    let program = vtable_slot_program(vec![IrMethod {
+        slot: MethodSlot(1),
+        name: "missing_zero".to_string(),
+        function: "Widget_missing_zero".to_string(),
+    }]);
+
+    let err = emit_llvm(&program).expect_err("codegen should reject non-contiguous slots");
+    match err {
+        LlvmCodegenError::UnsupportedOperation { message } => {
+            assert!(message.contains("non-contiguous method slots"));
+            assert!(message.contains("expected slot 0"));
+            assert!(message.contains("found slot 1"));
+            assert!(message.contains("Widget"));
+        }
+        other => panic!("expected UnsupportedOperation, got {other:?}"),
     }
 }
 
@@ -315,13 +401,4 @@ fn unsupported_closure_still_fails_cleanly() {
     let err =
         codegen_error_from_source("let f: (Number) -> Number = (x: Number) => x + 1 in f(4);");
     assert_unsupported_error(err, &["unsupported", "closure"]);
-}
-
-#[test]
-fn unsupported_type_test_and_cast_still_fail_cleanly() {
-    let type_test = codegen_error_from_source("type A {}\nlet x: Object = new A() in x is A;");
-    assert_unsupported_error(type_test, &["unsupported", "typetest"]);
-
-    let type_cast = codegen_error_from_source("type A {}\nlet x: Object = new A() in x as A;");
-    assert_unsupported_error(type_cast, &["unsupported", "typecast"]);
 }

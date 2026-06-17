@@ -48,12 +48,15 @@ void hulk_print_bool(unsigned char value);
 void hulk_print_string(HulkString* value);
 
 HulkString* hulk_string_concat(HulkString* left, HulkString* right);
+unsigned char hulk_string_equals(HulkString* left, HulkString* right);
 HulkString* hulk_string_from_number(double value);
 HulkString* hulk_string_from_bool(unsigned char value);
 void hulk_runtime_error(const char* message);
 
 HulkObject* hulk_alloc_object(long long type_id, long long attr_count, HulkVTable* vtable);
 void* hulk_object_method(HulkObject* object, long long slot);
+unsigned char hulk_object_is(HulkObject* object, long long target_type_id);
+HulkObject* hulk_object_as(HulkObject* object, long long target_type_id);
 
 void hulk_object_set_number(HulkObject* object, long long attr_id, double value);
 void hulk_object_set_bool(HulkObject* object, long long attr_id, unsigned char value);

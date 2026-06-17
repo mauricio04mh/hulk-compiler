@@ -142,11 +142,14 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare double @hulk_rand()\n");
         out.push_str("declare void @hulk_print_string(ptr)\n");
         out.push_str("declare ptr @hulk_string_concat(ptr, ptr)\n");
+        out.push_str("declare i8 @hulk_string_equals(ptr, ptr)\n");
         out.push_str("declare ptr @hulk_string_from_number(double)\n");
         out.push_str("declare ptr @hulk_string_from_bool(i8)\n");
         out.push_str("declare void @hulk_runtime_error(ptr)\n");
         out.push_str("declare ptr @hulk_alloc_object(i64, i64, ptr)\n");
         out.push_str("declare ptr @hulk_object_method(ptr, i64)\n");
+        out.push_str("declare i8 @hulk_object_is(ptr, i64)\n");
+        out.push_str("declare ptr @hulk_object_as(ptr, i64)\n");
         out.push_str("declare void @hulk_object_set_number(ptr, i64, double)\n");
         out.push_str("declare void @hulk_object_set_bool(ptr, i64, i8)\n");
         out.push_str("declare void @hulk_object_set_string(ptr, i64, ptr)\n");
@@ -199,8 +202,24 @@ impl<'a> LlvmEmitter<'a> {
         for ty in &self.program.types {
             let methods_name = vtable_methods_global_name(&ty.name);
             let vtable_name = vtable_global_name(&ty.name);
-            let method_refs = ty
-                .methods
+            let mut methods = ty.methods.iter().collect::<Vec<_>>();
+            methods.sort_by_key(|method| method.slot.0);
+            for (expected_slot, method) in methods.iter().enumerate() {
+                let expected_slot = expected_slot as u32;
+                if method.slot.0 != expected_slot {
+                    return Err(LlvmCodegenError::UnsupportedOperation {
+                        message: format!(
+                            "type '{}' has non-contiguous method slots: expected slot {}, found slot {} on method '{}' (slots must be contiguous from 0 to {})",
+                            ty.name,
+                            expected_slot,
+                            method.slot.0,
+                            method.name,
+                            ty.methods.len().saturating_sub(1)
+                        ),
+                    });
+                }
+            }
+            let method_refs = methods
                 .iter()
                 .map(|method| {
                     let sig = self.signatures.get(&method.function).ok_or_else(|| {
@@ -438,12 +457,16 @@ impl<'a> FunctionEmitter<'a> {
             IrInstr::ClosureCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
                 instruction: "ClosureCall",
             }),
-            IrInstr::TypeTest { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "TypeTest",
-            }),
-            IrInstr::TypeCast { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "TypeCast",
-            }),
+            IrInstr::TypeTest {
+                dst,
+                value,
+                type_name,
+            } => self.emit_type_test(*dst, value, type_name),
+            IrInstr::TypeCast {
+                dst,
+                value,
+                type_name,
+            } => self.emit_type_cast(*dst, value, type_name),
         }
     }
 
@@ -603,31 +626,59 @@ impl<'a> FunctionEmitter<'a> {
                 found: dst_ty.clone(),
             });
         }
-        let operand_ty = self.value_type(left)?;
-        let pred = matches!(op, IrBinaryOp::Eq);
+        let left_ty = self.value_type(left)?;
+        let right_ty = self.value_type(right)?;
+        let is_eq = matches!(op, IrBinaryOp::Eq);
         let name = self.next_name("eq");
-        match operand_ty {
-            IrTypeRef::Number => {
+        match (&left_ty, &right_ty) {
+            (IrTypeRef::Number, IrTypeRef::Number) => {
                 let left = self.read_value_as(left, &IrTypeRef::Number)?;
                 let right = self.read_value_as(right, &IrTypeRef::Number)?;
-                let op = if pred { "oeq" } else { "one" };
+                let op = if is_eq { "oeq" } else { "one" };
                 self.lines.push(format!(
                     "  {name} = fcmp {op} double {}, {}",
                     left.operand, right.operand
                 ));
             }
-            IrTypeRef::Boolean => {
+            (IrTypeRef::Boolean, IrTypeRef::Boolean) => {
                 let left = self.read_value_as(left, &IrTypeRef::Boolean)?;
                 let right = self.read_value_as(right, &IrTypeRef::Boolean)?;
-                let op = if pred { "eq" } else { "ne" };
+                let op = if is_eq { "eq" } else { "ne" };
                 self.lines.push(format!(
                     "  {name} = icmp {op} i1 {}, {}",
                     left.operand, right.operand
                 ));
             }
-            other => {
+            (IrTypeRef::String, IrTypeRef::String) => {
+                let left = self.read_value_as(left, &IrTypeRef::String)?;
+                let right = self.read_value_as(right, &IrTypeRef::String)?;
+                let raw = self.next_name("streqraw");
+                self.lines.push(format!(
+                    "  {raw} = call i8 @hulk_string_equals(ptr {}, ptr {})",
+                    left.operand, right.operand
+                ));
+                if is_eq {
+                    self.lines.push(format!("  {name} = icmp ne i8 {raw}, 0"));
+                } else {
+                    let eq = self.next_name("streq");
+                    self.lines.push(format!("  {eq} = icmp ne i8 {raw}, 0"));
+                    self.lines.push(format!("  {name} = xor i1 {eq}, true"));
+                }
+            }
+            (left_ty, right_ty)
+                if is_object_like_type(left_ty) && is_object_like_type(right_ty) =>
+            {
+                let left = self.read_value_as(left, left_ty)?;
+                let right = self.read_value_as(right, right_ty)?;
+                let op = if is_eq { "eq" } else { "ne" };
+                self.lines.push(format!(
+                    "  {name} = icmp {op} ptr {}, {}",
+                    left.operand, right.operand
+                ));
+            }
+            (left_ty, right_ty) => {
                 return Err(LlvmCodegenError::UnsupportedOperation {
-                    message: format!("unsupported equality operand type {other}"),
+                    message: format!("unsupported equality operand types {left_ty} and {right_ty}"),
                 });
             }
         }
@@ -788,6 +839,50 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         Ok(())
+    }
+
+    fn emit_type_test(
+        &mut self,
+        dst: IrPlace,
+        value: &IrValue,
+        type_name: &str,
+    ) -> Result<(), LlvmCodegenError> {
+        let dst_ty = self.place_type(dst)?;
+        if dst_ty != IrTypeRef::Boolean {
+            return Err(LlvmCodegenError::TypeMismatch {
+                expected: IrTypeRef::Boolean,
+                found: dst_ty,
+            });
+        }
+
+        let object = self.read_object_ptr(value)?;
+        let target_type_id = self.type_id_for_name(type_name)?;
+        let raw = self.next_name("israw");
+        self.lines.push(format!(
+            "  {raw} = call i8 @hulk_object_is(ptr {object}, i64 {target_type_id})"
+        ));
+        let result = self.next_name("is");
+        self.lines.push(format!("  {result} = icmp ne i8 {raw}, 0"));
+        self.store_operand(dst, &IrTypeRef::Boolean, &result)
+    }
+
+    fn emit_type_cast(
+        &mut self,
+        dst: IrPlace,
+        value: &IrValue,
+        type_name: &str,
+    ) -> Result<(), LlvmCodegenError> {
+        let target_ty = IrTypeRef::User(type_name.to_string());
+        let dst_ty = self.place_type(dst)?;
+        self.ensure_type(&dst_ty, &target_ty)?;
+
+        let object = self.read_object_ptr(value)?;
+        let target_type_id = self.type_id_for_name(type_name)?;
+        let result = self.next_name("cast");
+        self.lines.push(format!(
+            "  {result} = call ptr @hulk_object_as(ptr {object}, i64 {target_type_id})"
+        ));
+        self.store_operand(dst, &dst_ty, &result)
     }
 
     fn emit_static_call(
@@ -1324,6 +1419,14 @@ impl<'a> FunctionEmitter<'a> {
             })
     }
 
+    fn type_id_for_name(&self, type_name: &str) -> Result<u32, LlvmCodegenError> {
+        self.types.get(type_name).map(|ty| ty.id.0).ok_or_else(|| {
+            LlvmCodegenError::UnsupportedOperation {
+                message: format!("unknown type '{type_name}' in runtime type operation"),
+            }
+        })
+    }
+
     fn is_descendant_of(&self, child: &str, ancestor: &str) -> bool {
         let mut current = self.types.get(child).and_then(|ty| ty.parent.as_deref());
         while let Some(name) = current {
@@ -1428,6 +1531,10 @@ fn default_value(ty: &IrTypeRef) -> Result<String, LlvmCodegenError> {
         | IrTypeRef::Functor { .. } => Ok("null".to_string()),
         IrTypeRef::Unknown => Err(LlvmCodegenError::UnsupportedType { ty: ty.clone() }),
     }
+}
+
+fn is_object_like_type(ty: &IrTypeRef) -> bool {
+    matches!(ty, IrTypeRef::Object | IrTypeRef::User(_))
 }
 
 fn llvm_float(value: f64) -> String {
