@@ -104,7 +104,7 @@ fn case_l_parameter_without_type() {
 
 #[test]
 fn case_l_unconstrained_parameter_still_fails() {
-    let err = check_err("function f(x) => x;\n\nf(1);");
+    let err = check_err("function f(x) => x;\n\n1;");
     assert!(matches!(
         err,
         SemanticError::CannotInferParameterType { .. }
