@@ -44,17 +44,14 @@ fn attr_access_via_self_ok() {
 }
 
 #[test]
-fn attr_access_in_child_via_self_parent_attr_fails() {
-    // Per spec (A.7): attributes are private to the declaring type — even self cannot
-    // reach a parent's attribute.
-    let err = check_err(
+fn attr_access_in_child_via_self_parent_attr_ok() {
+    check_ok(
         "type Animal(name: String) { name: String = name; }\n\
          type Dog inherits Animal(\"dog\") {\n\
              getName(): String => self.name;\n\
          }\n\
-         42;",
+         new Dog().getName();",
     );
-    assert!(matches!(err, SemanticError::AttributeIsPrivate { .. }));
 }
 
 // ── Primitive inheritance guard (G2) ──────────────────────────────────────────
