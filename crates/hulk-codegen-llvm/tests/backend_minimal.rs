@@ -58,6 +58,16 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         expected_stdout: "5\n",
     },
     SupportedCase {
+        name: "inferred function parameter",
+        source: "function double(x) => x + x;\n\nprint(double(21));",
+        expected_stdout: "42\n",
+    },
+    SupportedCase {
+        name: "inferred identity function string",
+        source: "function id(x) => x;\n\nprint(id(\"hello\"));",
+        expected_stdout: "hello\n",
+    },
+    SupportedCase {
         name: "recursive function",
         source: "function fact(n: Number): Number =>\n    if (n <= 1) 1 else n * fact(n - 1);\n\nprint(fact(5));",
         expected_stdout: "120\n",

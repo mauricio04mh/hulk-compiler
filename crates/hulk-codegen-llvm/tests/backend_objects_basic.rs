@@ -77,6 +77,39 @@ let g = new Greeter("Hulk") in print(g.hello());
         expected_stdout: "Hello Hulk\n",
     },
     ObjectCase {
+        name: "inferred method parameter",
+        source: r#"
+type Accumulator {
+    add(x) => x + 1;
+}
+
+let a = new Accumulator() in print(a.add(41));
+"#,
+        expected_stdout: "42\n",
+    },
+    ObjectCase {
+        name: "inferred constructor parameter stored on object",
+        source: r#"
+type Box(value) {
+    get() => value;
+}
+
+let b = new Box(42) in print(b.get());
+"#,
+        expected_stdout: "42\n",
+    },
+    ObjectCase {
+        name: "inferred string constructor parameter",
+        source: r#"
+type Greeter(name) {
+    hello(): String => "Hello" @@ name;
+}
+
+let g = new Greeter("Hulk") in print(g.hello());
+"#,
+        expected_stdout: "Hello Hulk\n",
+    },
+    ObjectCase {
         name: "method calls method on same object",
         source: r#"
 type Point(x: Number, y: Number) {
