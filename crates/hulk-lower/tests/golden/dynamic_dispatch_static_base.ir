@@ -50,21 +50,29 @@ method Point.move #2 -> Point {
   temp %t1: Number
   temp %t2: Number
   temp %t3: Number
+  temp %t4: Number
+  temp %t5: Number
 
   %t0 = getattr %p0, #0
-  %t1 = %t0 + %p1
-  setattr %p0, #0, %t1
-  %t2 = getattr %p0, #1
-  %t3 = %t2 + %p2
-  setattr %p0, #1, %t3
+  %t1 = getattr %p0, #1
+  %t2 = getattr %p0, #0
+  %t3 = %t2 + %p1
+  setattr %p0, #0, %t3
+  %t4 = getattr %p0, #1
+  %t5 = %t4 + %p2
+  setattr %p0, #1, %t5
   return %p0
 }
 method Point.getX #3 -> Number {
   param %p0: Point name=self
   temp %t0: Number
+  temp %t1: Number
+  temp %t2: Number
 
   %t0 = getattr %p0, #0
-  return %t0
+  %t1 = getattr %p0, #1
+  %t2 = getattr %p0, #0
+  return %t2
 }
 function ColoredPoint_init #4 -> ColoredPoint {
   param %p0: ColoredPoint name=self
@@ -74,14 +82,22 @@ function ColoredPoint_init #4 -> ColoredPoint {
 
   static_call Point_init(%p0, %p1, %p2)
   setattr %p0, #2, %p3
+  setattr %p0, #0, %p1
+  setattr %p0, #1, %p2
   return %p0
 }
 method ColoredPoint.move #5 -> Point {
   param %p0: ColoredPoint name=self
   param %p1: Number name=dx
   param %p2: Number name=dy
-  temp %t0: Point
+  temp %t0: Number
+  temp %t1: Number
+  temp %t2: String
+  temp %t3: Point
 
-  %t0 = base_call Point::move(%p0, %p1, %p2)
+  %t0 = getattr %p0, #0
+  %t1 = getattr %p0, #1
+  %t2 = getattr %p0, #2
+  %t3 = base_call Point::move(%p0, %p1, %p2)
   return %p0
 }

@@ -107,6 +107,15 @@ fn golden_08_function_call() {
 }
 
 #[test]
+fn golden_inferred_function_param() {
+    assert_golden(
+        "inferred_function_param",
+        include_str!("golden/inferred_function_param.hulk"),
+        include_str!("golden/inferred_function_param.ir"),
+    );
+}
+
+#[test]
 fn golden_09_type_method() {
     assert_golden(
         "09_type_method",
@@ -116,11 +125,29 @@ fn golden_09_type_method() {
 }
 
 #[test]
+fn golden_inferred_method_param() {
+    assert_golden(
+        "inferred_method_param",
+        include_str!("golden/inferred_method_param.hulk"),
+        include_str!("golden/inferred_method_param.ir"),
+    );
+}
+
+#[test]
 fn golden_10_inheritance_base() {
     assert_golden(
         "10_inheritance_base",
         include_str!("golden/10_inheritance_base.hulk"),
         include_str!("golden/10_inheritance_base.ir"),
+    );
+}
+
+#[test]
+fn golden_inferred_constructor_param() {
+    assert_golden(
+        "inferred_constructor_param",
+        include_str!("golden/inferred_constructor_param.hulk"),
+        include_str!("golden/inferred_constructor_param.ir"),
     );
 }
 

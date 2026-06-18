@@ -28,7 +28,9 @@ function Point_init #1 -> Point {
 method Point.getX #2 -> Number {
   param %p0: Point name=self
   temp %t0: Number
+  temp %t1: Number
 
   %t0 = getattr %p0, #0
-  return %t0
+  %t1 = getattr %p0, #0
+  return %t1
 }
