@@ -1,6 +1,8 @@
 .TYPES
 type Box #0 {
   attr #0 value: Number
+  attr #1 a: Number
+  attr #2 b: Number
   method #0 get : Box_get
 }
 
@@ -32,12 +34,18 @@ function Box_init #1 -> Box {
   %t0 = %p2 * 2
   %t1 = %p1 + %t0
   setattr %p0, #0, %t1
+  setattr %p0, #1, %p1
+  setattr %p0, #2, %p2
   return %p0
 }
 method Box.get #2 -> Number {
   param %p0: Box name=self
   temp %t0: Number
+  temp %t1: Number
+  temp %t2: Number
 
-  %t0 = getattr %p0, #0
-  return %t0
+  %t0 = getattr %p0, #1
+  %t1 = getattr %p0, #2
+  %t2 = getattr %p0, #0
+  return %t2
 }

@@ -43,13 +43,17 @@ method Point.move #2 -> Point {
   temp %t1: Number
   temp %t2: Number
   temp %t3: Number
+  temp %t4: Number
+  temp %t5: Number
 
   %t0 = getattr %p0, #0
-  %t1 = %t0 + %p1
-  setattr %p0, #0, %t1
-  %t2 = getattr %p0, #1
-  %t3 = %t2 + %p2
-  setattr %p0, #1, %t3
+  %t1 = getattr %p0, #1
+  %t2 = getattr %p0, #0
+  %t3 = %t2 + %p1
+  setattr %p0, #0, %t3
+  %t4 = getattr %p0, #1
+  %t5 = %t4 + %p2
+  setattr %p0, #1, %t5
   return %p0
 }
 function ChildPoint_init #3 -> ChildPoint {
@@ -58,6 +62,8 @@ function ChildPoint_init #3 -> ChildPoint {
   param %p2: Number name=y
 
   static_call Point_init(%p0, %p1, %p2)
+  setattr %p0, #0, %p1
+  setattr %p0, #1, %p2
   return %p0
 }
 method ChildPoint.move #4 -> Point {
@@ -65,9 +71,13 @@ method ChildPoint.move #4 -> Point {
   param %p1: Number name=dx
   param %p2: Number name=dy
   local %l0: Point name=r
-  temp %t0: Point
+  temp %t0: Number
+  temp %t1: Number
+  temp %t2: Point
 
-  %t0 = base_call Point::move(%p0, %p1, %p2)
-  %l0 = %t0
+  %t0 = getattr %p0, #0
+  %t1 = getattr %p0, #1
+  %t2 = base_call Point::move(%p0, %p1, %p2)
+  %l0 = %t2
   return %l0
 }

@@ -1,0 +1,5 @@
+type Box(value) {
+    get() => value;
+}
+
+new Box(42).get();

@@ -171,6 +171,20 @@ impl LoweringContext {
             });
         }
 
+        for param in &decl.params {
+            if attributes.iter().any(|attr| attr.name == param.name) {
+                continue;
+            }
+            let id = AttrId(attributes.len() as u32);
+            self.attr_ids
+                .insert((decl.name.clone(), param.name.clone()), id);
+            attributes.push(IrAttribute {
+                id,
+                name: param.name.clone(),
+                ty: lower_type(&param.ty),
+            });
+        }
+
         for method in &decl.methods {
             let function = method_label(&method.owner_type, &method.name);
             let slot = if let Some(existing) = methods.iter_mut().find(|m| m.name == method.name) {
@@ -242,13 +256,18 @@ impl LoweringContext {
             .get_type(&ty.name)
             .map(|info| info.constructor_params.clone())
             .unwrap_or_default();
+        let explicit_attrs: HashSet<String> =
+            ty.attributes.iter().map(|attr| attr.name.clone()).collect();
         for (idx, (name, ty_ref)) in ctor_params.iter().enumerate() {
-            let symbol = ty
-                .params
-                .iter()
-                .find(|param| param.name == *name)
-                .map(|param| param.symbol);
-            builder.new_param(name.clone(), lower_type(ty_ref), symbol);
+            let hir_param = ty.params.get(idx);
+            let param_name = hir_param
+                .map(|param| param.name.clone())
+                .unwrap_or_else(|| name.clone());
+            let param_ty = hir_param
+                .map(|param| lower_type(&param.ty))
+                .unwrap_or_else(|| lower_type(ty_ref));
+            let symbol = hir_param.map(|param| param.symbol);
+            builder.new_param(param_name, param_ty, symbol);
             if idx >= ty.params.len() {
                 // Passthrough parent params may not have HIR symbols in the child type.
                 continue;
@@ -283,6 +302,21 @@ impl LoweringContext {
             });
         }
 
+        for (idx, param) in ty.params.iter().enumerate() {
+            if explicit_attrs.contains(&param.name) {
+                continue;
+            }
+            let Some(attr_id) = self.attr_id(&ty.name, &param.name).ok() else {
+                continue;
+            };
+            let value = IrValue::Param(ParamId((idx + 1) as u32));
+            builder.body.push(IrInstr::SetAttr {
+                object: self_value.clone(),
+                attr: attr_id,
+                value,
+            });
+        }
+
         builder.body.push(IrInstr::Return(Some(self_value)));
         self.functions.push(builder.finish());
         Ok(())
@@ -306,6 +340,7 @@ impl LoweringContext {
         );
         builder.self_value = Some(self_value);
         self.define_params(&mut builder, &method.params);
+        self.define_constructor_param_bindings(method, &mut builder)?;
         let value = self.lower_expr(&method.body, &mut builder)?;
         builder.body.push(IrInstr::Return(Some(value)));
         self.functions.push(builder.finish());
@@ -320,6 +355,37 @@ impl LoweringContext {
                 Some(param.symbol),
             );
         }
+    }
+
+    fn define_constructor_param_bindings(
+        &mut self,
+        method: &HirMethodDecl,
+        builder: &mut FunctionBuilder,
+    ) -> Result<(), LowerError> {
+        let Some(type_decl) = self.type_decls.get(&method.owner_type) else {
+            return Ok(());
+        };
+
+        let Some(self_value) = builder.self_value.clone() else {
+            return Err(LowerError::InternalInvariant {
+                message: "missing self value while binding constructor params".to_string(),
+            });
+        };
+
+        for param in &type_decl.params {
+            let Some(attr_id) = self.attr_id(&method.owner_type, &param.name).ok() else {
+                continue;
+            };
+            let place = builder.new_temp(lower_type(&param.ty));
+            builder.body.push(IrInstr::GetAttr {
+                dst: place,
+                object: self_value.clone(),
+                attr: attr_id,
+            });
+            builder.define_local_symbol(param.symbol, place);
+        }
+
+        Ok(())
     }
 
     fn lower_expr(

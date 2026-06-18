@@ -1,0 +1,5 @@
+type Accumulator {
+    add(x) => x + 1;
+}
+
+new Accumulator().add(41);
