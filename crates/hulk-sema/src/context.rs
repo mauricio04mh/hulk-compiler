@@ -175,20 +175,27 @@ impl TypeRegistry {
                                 method_name: method.name.clone(),
                             });
                         }
-                        let params = method
-                            .params
-                            .iter()
-                            .map(|p| {
-                                p.ty.as_ref()
-                                    .map(Type::from_type_ref)
-                                    .unwrap_or(Type::Unknown)
-                            })
-                            .collect();
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map(Type::from_type_ref)
-                            .unwrap_or(Type::Unknown);
+                        let mut params = Vec::new();
+                        for param in &method.params {
+                            let Some(ty_ref) = &param.ty else {
+                                return Err(SemanticError::CannotInferParameterType {
+                                    function: pd.name.clone(),
+                                    parameter: param.name.clone(),
+                                });
+                            };
+                            params.push(Type::from_type_ref(ty_ref));
+                        }
+                        let return_type = match &method.return_type {
+                            Some(ty_ref) => Type::from_type_ref(ty_ref),
+                            None => {
+                                return Err(SemanticError::UnsupportedConstruct {
+                                    message: format!(
+                                        "protocol '{}' method '{}' must declare a return type",
+                                        pd.name, method.name
+                                    ),
+                                });
+                            }
+                        };
                         methods.insert(
                             method.name.clone(),
                             MethodInfo {
@@ -576,16 +583,13 @@ impl TypeRegistry {
     /// For every type whose declared parent is a protocol, verify structural conformance.
     fn validate_protocol_conformance(&self) -> Result<(), SemanticError> {
         for (type_name, type_info) in &self.types {
-            if let Some(parent_name) = &type_info.parent {
-                if let Some(protocol) = self.protocols.get(parent_name) {
-                    self.check_type_vs_protocol(type_name, protocol)?;
-                    // Also satisfy the protocol's own parent (if it extends another protocol).
-                    if let Some(grand_name) = &protocol.parent {
-                        if let Some(grand_proto) = self.protocols.get(grand_name.as_str()) {
-                            self.check_type_vs_protocol(type_name, grand_proto)?;
-                        }
-                    }
-                }
+            let mut current_parent = type_info.parent.clone();
+            while let Some(parent_name) = current_parent {
+                let Some(protocol) = self.protocols.get(&parent_name) else {
+                    break;
+                };
+                self.check_type_vs_protocol(type_name, protocol)?;
+                current_parent = protocol.parent.clone();
             }
         }
         Ok(())
@@ -655,6 +659,11 @@ impl TypeRegistry {
         let Some(protocol) = self.protocols.get(protocol_name) else {
             return false;
         };
+        if let Some(parent) = &protocol.parent {
+            if !self.implicitly_conforms_to_protocol(type_name, parent) {
+                return false;
+            }
+        }
         let methods: Vec<(String, MethodInfo)> = protocol
             .methods
             .iter()

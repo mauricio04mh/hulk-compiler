@@ -1,0 +1,32 @@
+.TYPES
+type Accumulator #0 {
+  method #0 add : Accumulator_add
+}
+
+.DATA
+  <empty>
+
+.CODE
+entry #0
+function entry #0 -> Number {
+  temp %t0: Accumulator
+  temp %t1: Number
+
+  %t0 = allocate Accumulator
+  %t0 = static_call Accumulator_init(%t0)
+  %t1 = vcall %t0.Accumulator::add#0(%t0, 41)
+  return %t1
+}
+function Accumulator_init #1 -> Accumulator {
+  param %p0: Accumulator name=self
+
+  return %p0
+}
+method Accumulator.add #2 -> Number {
+  param %p0: Accumulator name=self
+  param %p1: Number name=x
+  temp %t0: Number
+
+  %t0 = %p1 + 1
+  return %t0
+}

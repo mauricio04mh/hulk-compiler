@@ -1167,6 +1167,17 @@ fn is_assignable(sub: &Type, target: &Type, registry: &TypeRegistry) -> bool {
     if *sub == Type::Unknown || *target == Type::Unknown {
         return true;
     }
+    if let Type::UserType(target_name) = target {
+        if registry.get_protocol(target_name).is_some() {
+            return match sub {
+                Type::UserType(concrete_name) => {
+                    registry.implicitly_conforms_to_protocol(concrete_name, target_name)
+                }
+                Type::Iterable(_) if target_name == "Iterable" => true,
+                _ => false,
+            };
+        }
+    }
     if sub == target || *target == Type::Object {
         return true;
     }
