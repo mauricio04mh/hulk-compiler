@@ -2,11 +2,11 @@ use hulk_codegen_llvm::emit_llvm;
 use hulk_frontend::parse_hulk_types_program;
 use hulk_lower::lower_program;
 use hulk_sema::{analyze_program, check_program};
-use std::{env, fs, process};
+use std::{env, fs, path::PathBuf, process};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let (path, show_ast, show_check, show_hir, show_ir, show_llvm) = parse_args(&args);
+    let (path, mode) = parse_args(&args);
 
     let source = fs::read_to_string(&path).unwrap_or_else(|e| {
         eprintln!("error: cannot read '{}': {}", path, e);
@@ -17,88 +17,176 @@ fn main() {
     let program = match parse_hulk_types_program(&source) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("parse error: {}", e);
+            let msg = e.to_string();
+            // Lexical errors contain "lex error" in the message; distinguish from
+            // pure syntactic (grammar) errors with separate exit codes.
+            if msg.contains("lex error") || msg.contains("Unterminated") || msg.contains("unexpected character") {
+                eprintln!("LEXICAL error: {}", e);
+                process::exit(1);
+            }
+            eprintln!("SYNTACTIC error: {}", e);
             process::exit(2);
         }
     };
 
-    // ── AST dump ──────────────────────────────────────────────────────────────
-    if show_ast {
-        println!("══════════════════════════════════════════");
-        println!("  AST");
-        println!("══════════════════════════════════════════");
-        print_ast(&program);
-    }
-
-    // ── Semantic check ────────────────────────────────────────────────────────
-    if show_check {
-        println!();
-        println!("══════════════════════════════════════════");
-        println!("  Type Check");
-        println!("══════════════════════════════════════════");
-        match check_program(&program) {
-            Ok(()) => println!("✓  no errors"),
-            Err(errors) => {
-                print_semantic_errors(&errors);
-            }
+    match mode {
+        Mode::Compile => {
+            compile_to_binary(&program);
         }
-    }
-
-    // ── HIR dump ─────────────────────────────────────────────────────────────
-    if show_hir {
-        println!();
-        println!("══════════════════════════════════════════");
-        println!("  HIR");
-        println!("══════════════════════════════════════════");
-        match analyze_program(&program) {
-            Ok(semantic) => println!("{:#?}", semantic.hir),
-            Err(errors) => {
-                print_semantic_errors(&errors);
+        Mode::Debug {
+            show_ast,
+            show_check,
+            show_hir,
+            show_ir,
+            show_llvm,
+        } => {
+            if show_ast {
+                println!("══════════════════════════════════════════");
+                println!("  AST");
+                println!("══════════════════════════════════════════");
+                print_ast(&program);
             }
-        }
-    }
 
-    // ── IR dump ──────────────────────────────────────────────────────────────
-    if show_ir {
-        println!();
-        println!("══════════════════════════════════════════");
-        println!("  IR");
-        println!("══════════════════════════════════════════");
-        match analyze_program(&program) {
-            Ok(semantic) => match lower_program(&semantic) {
-                Ok(ir) => println!("{}", ir),
-                Err(error) => {
-                    eprintln!("lowering error: {}", error);
-                    process::exit(4);
-                }
-            },
-            Err(errors) => {
-                print_semantic_errors(&errors);
-            }
-        }
-    }
-
-    // ── LLVM IR dump ────────────────────────────────────────────────────────
-    if show_llvm {
-        match analyze_program(&program) {
-            Ok(semantic) => match lower_program(&semantic) {
-                Ok(ir) => match emit_llvm(&ir) {
-                    Ok(llvm) => print!("{llvm}"),
-                    Err(error) => {
-                        eprintln!("LLVM codegen error: {}", error);
-                        process::exit(5);
+            if show_check {
+                println!();
+                println!("══════════════════════════════════════════");
+                println!("  Type Check");
+                println!("══════════════════════════════════════════");
+                match check_program(&program) {
+                    Ok(()) => println!("✓  no errors"),
+                    Err(errors) => {
+                        print_semantic_errors(&errors);
                     }
-                },
-                Err(error) => {
-                    eprintln!("lowering error: {}", error);
-                    process::exit(4);
                 }
-            },
-            Err(errors) => {
-                print_semantic_errors(&errors);
+            }
+
+            if show_hir {
+                println!();
+                println!("══════════════════════════════════════════");
+                println!("  HIR");
+                println!("══════════════════════════════════════════");
+                match analyze_program(&program) {
+                    Ok(semantic) => println!("{:#?}", semantic.hir),
+                    Err(errors) => {
+                        print_semantic_errors(&errors);
+                    }
+                }
+            }
+
+            if show_ir {
+                println!();
+                println!("══════════════════════════════════════════");
+                println!("  IR");
+                println!("══════════════════════════════════════════");
+                match analyze_program(&program) {
+                    Ok(semantic) => match lower_program(&semantic) {
+                        Ok(ir) => println!("{}", ir),
+                        Err(error) => {
+                            eprintln!("lowering error: {}", error);
+                            process::exit(4);
+                        }
+                    },
+                    Err(errors) => {
+                        print_semantic_errors(&errors);
+                    }
+                }
+            }
+
+            if show_llvm {
+                match analyze_program(&program) {
+                    Ok(semantic) => match lower_program(&semantic) {
+                        Ok(ir) => match emit_llvm(&ir) {
+                            Ok(llvm) => print!("{llvm}"),
+                            Err(error) => {
+                                eprintln!("LLVM codegen error: {}", error);
+                                process::exit(5);
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("lowering error: {}", error);
+                            process::exit(4);
+                        }
+                    },
+                    Err(errors) => {
+                        print_semantic_errors(&errors);
+                    }
+                }
             }
         }
     }
+}
+
+fn compile_to_binary(program: &hulk_frontend::ast::Program) {
+    let semantic = match analyze_program(program) {
+        Ok(s) => s,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("SEMANTIC error: {}", e);
+            }
+            process::exit(3);
+        }
+    };
+
+    let ir = match lower_program(&semantic) {
+        Ok(ir) => ir,
+        Err(e) => {
+            eprintln!("lowering error: {}", e);
+            process::exit(4);
+        }
+    };
+
+    let llvm = match emit_llvm(&ir) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("LLVM codegen error: {}", e);
+            process::exit(5);
+        }
+    };
+
+    // Write IR to a temp file
+    let ir_path = PathBuf::from("output.ll");
+    fs::write(&ir_path, &llvm).unwrap_or_else(|e| {
+        eprintln!("error: cannot write IR: {}", e);
+        process::exit(6);
+    });
+
+    // Find runtime: look next to the executable, then in CWD
+    let runtime_path = find_runtime();
+
+    // Invoke clang to produce ./output
+    let status = process::Command::new("clang")
+        .arg("-mllvm")
+        .arg("-opaque-pointers")
+        .arg(&ir_path)
+        .arg(&runtime_path)
+        .arg("-lm")
+        .arg("-o")
+        .arg("output")
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot invoke clang: {}", e);
+            process::exit(7);
+        });
+
+    let _ = fs::remove_file(&ir_path);
+
+    if !status.success() {
+        process::exit(status.code().unwrap_or(8));
+    }
+}
+
+fn find_runtime() -> PathBuf {
+    // Try relative to the executable (repo_root/runtime/hulk_runtime.c)
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("runtime").join("hulk_runtime.c");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    // Fallback: relative to CWD
+    PathBuf::from("runtime/hulk_runtime.c")
 }
 
 // ── Pretty-print the AST ─────────────────────────────────────────────────────
@@ -124,20 +212,32 @@ fn decl_summary(decl: &hulk_frontend::ast::Decl) -> String {
 
 fn print_semantic_errors(errors: &[hulk_sema::error::SemanticError]) -> ! {
     for err in errors {
-        println!("✗  {}", err);
+        eprintln!("SEMANTIC error: {}", err);
     }
     process::exit(3);
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
-fn parse_args(args: &[String]) -> (String, bool, bool, bool, bool, bool) {
+enum Mode {
+    Compile,
+    Debug {
+        show_ast: bool,
+        show_check: bool,
+        show_hir: bool,
+        show_ir: bool,
+        show_llvm: bool,
+    },
+}
+
+fn parse_args(args: &[String]) -> (String, Mode) {
     if args.len() < 2 {
         eprintln!(
             "usage: hulkc <file.hulk> [--ast] [--check] [--hir|--dump-hir] [--ir] [--emit-llvm] [--all]"
         );
+        eprintln!("  (no flags)   compile and produce ./output");
         eprintln!("  --ast        print the AST");
-        eprintln!("  --check      run the type checker (default when no flag given)");
+        eprintln!("  --check      run the type checker");
         eprintln!("  --hir        print the HIR produced by semantic analysis");
         eprintln!("  --dump-hir   alias for --hir");
         eprintln!("  --ir         print the lowered IR");
@@ -149,11 +249,24 @@ fn parse_args(args: &[String]) -> (String, bool, bool, bool, bool, bool) {
     let path = args[1].clone();
     let flags: Vec<&str> = args[2..].iter().map(String::as_str).collect();
 
-    let show_ast = flags.contains(&"--ast") || flags.contains(&"--all") || flags.is_empty();
-    let show_check = flags.contains(&"--check") || flags.contains(&"--all") || flags.is_empty();
+    if flags.is_empty() {
+        return (path, Mode::Compile);
+    }
+
+    let show_ast = flags.contains(&"--ast") || flags.contains(&"--all");
+    let show_check = flags.contains(&"--check") || flags.contains(&"--all");
     let show_hir = flags.contains(&"--hir") || flags.contains(&"--dump-hir");
     let show_ir = flags.contains(&"--ir");
     let show_llvm = flags.contains(&"--emit-llvm");
 
-    (path, show_ast, show_check, show_hir, show_ir, show_llvm)
+    (
+        path,
+        Mode::Debug {
+            show_ast,
+            show_check,
+            show_hir,
+            show_ir,
+            show_llvm,
+        },
+    )
 }

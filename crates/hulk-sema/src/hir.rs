@@ -185,6 +185,11 @@ pub enum HirExprKind {
         iterable: Box<HirExpr>,
         element_type: Type,
     },
+    VectorNew {
+        size: Box<HirExpr>,
+        element_type: Type,
+        init: Option<HirVectorNewInit>,
+    },
     VectorIndex {
         vector: Box<HirExpr>,
         index: Box<HirExpr>,
@@ -203,6 +208,13 @@ pub struct HirParam {
     pub ty: Type,
     pub symbol: SymbolId,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirVectorNewInit {
+    pub var: String,
+    pub symbol: SymbolId,
+    pub body: Box<HirExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +237,11 @@ pub enum HirAssignTarget {
         owner_type: String,
         attr_name: String,
         ty: Type,
+    },
+    VectorIndex {
+        vector: Box<HirExpr>,
+        index: Box<HirExpr>,
+        elem_ty: Type,
     },
 }
 

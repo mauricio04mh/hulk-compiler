@@ -17,6 +17,8 @@ keyword is IS
 keyword as AS
 keyword protocol PROTOCOL
 keyword extends EXTENDS
+keyword interface INTERFACE
+keyword define DEFINE
 
 symbol "@@" ATAT
 symbol "@" AT

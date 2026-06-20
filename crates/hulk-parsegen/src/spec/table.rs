@@ -4,7 +4,7 @@ use crate::spec::first::{FirstSets, first_of_sequence};
 use crate::spec::follow::FollowSets;
 use crate::spec::grammar_spec::GrammarSpec;
 use crate::symbol::Symbol;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub type ParseTable = HashMap<(String, String), Production>;
 
@@ -14,6 +14,9 @@ pub fn build_ll1_table(
     follow_sets: &FollowSets,
 ) -> Result<ParseTable, GrammarError> {
     let mut table = ParseTable::new();
+    // Track which (non_terminal, terminal) entries were filled by a concrete (non-epsilon)
+    // production so that epsilon-derived entries cannot overwrite them.
+    let mut concrete_entries: HashSet<(String, String)> = HashSet::new();
 
     for production in &grammar.productions {
         let first_alpha = first_of_sequence(&production.rhs, first_sets);
@@ -25,6 +28,7 @@ pub fn build_ll1_table(
 
             let terminal = terminal_key(symbol).expect("FIRST entries must be terminal-like");
             insert_or_conflict(&mut table, &production.lhs, &terminal, production)?;
+            concrete_entries.insert((production.lhs.clone(), terminal));
         }
 
         if first_alpha.contains(&Symbol::Epsilon) {
@@ -34,6 +38,12 @@ pub fn build_ll1_table(
                 .unwrap_or_default();
             for symbol in follow {
                 let terminal = terminal_key(&symbol).expect("FOLLOW entries must be terminal-like");
+                // If a concrete production already owns this (non_terminal, terminal) slot,
+                // prefer it over the epsilon production (resolve the shift/epsilon conflict
+                // in favour of continuing to parse rather than reducing to epsilon).
+                if concrete_entries.contains(&(production.lhs.clone(), terminal.clone())) {
+                    continue;
+                }
                 insert_or_conflict(&mut table, &production.lhs, &terminal, production)?;
             }
         }

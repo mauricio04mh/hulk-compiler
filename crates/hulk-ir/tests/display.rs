@@ -222,6 +222,7 @@ fn displays_control_flow_vectors_and_closures() {
                 IrTemp {
                     id: TempId(2),
                     ty: IrTypeRef::Functor {
+                        capture_types: vec![],
                         params: vec![IrTypeRef::Number],
                         ret: Box::new(IrTypeRef::Boolean),
                     },
@@ -340,6 +341,7 @@ fn displays_remaining_instruction_forms() {
                     IrTemp {
                         id: TempId(3),
                         ty: IrTypeRef::Functor {
+                            capture_types: vec![],
                             params: vec![IrTypeRef::Number],
                             ret: Box::new(IrTypeRef::Number),
                         },

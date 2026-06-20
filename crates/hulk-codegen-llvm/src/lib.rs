@@ -158,6 +158,15 @@ impl<'a> LlvmEmitter<'a> {
         out.push_str("declare i8 @hulk_object_get_bool(ptr, i64)\n");
         out.push_str("declare ptr @hulk_object_get_string(ptr, i64)\n");
         out.push_str("declare ptr @hulk_object_get_object(ptr, i64)\n");
+        out.push_str("declare ptr @hulk_range(double, double)\n");
+        out.push_str("declare ptr @hulk_vector_new()\n");
+        out.push_str("declare void @hulk_vector_push(ptr, i64)\n");
+        out.push_str("declare i64 @hulk_vector_get(ptr, i64)\n");
+        out.push_str("declare void @hulk_vector_set(ptr, i64, i64)\n");
+        out.push_str("declare i64 @hulk_vector_len(ptr)\n");
+        out.push_str("declare ptr @hulk_closure_alloc(ptr, i64)\n");
+        out.push_str("declare void @hulk_closure_set_capture(ptr, i64, ptr)\n");
+        out.push_str("declare ptr @hulk_closure_get_capture(ptr, i64)\n");
         out.push('\n');
         self.emit_data(&mut out)?;
 
@@ -436,27 +445,30 @@ impl<'a> FunctionEmitter<'a> {
                 method,
                 args,
             } => self.emit_base_call(*dst, parent_type, method, args),
-            IrInstr::NewVector { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "NewVector",
-            }),
-            IrInstr::VectorLen { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "VectorLen",
-            }),
-            IrInstr::VectorPush { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "VectorPush",
-            }),
-            IrInstr::VectorGet { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "VectorGet",
-            }),
-            IrInstr::VectorSet { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "VectorSet",
-            }),
-            IrInstr::MakeClosure { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "MakeClosure",
-            }),
-            IrInstr::ClosureCall { .. } => Err(LlvmCodegenError::UnsupportedInstruction {
-                instruction: "ClosureCall",
-            }),
+            IrInstr::NewVector { dst, elements } => {
+                self.emit_new_vector(*dst, elements)
+            }
+            IrInstr::VectorLen { dst, vector } => {
+                self.emit_vector_len(*dst, vector)
+            }
+            IrInstr::VectorPush { vector, value } => {
+                self.emit_vector_push(vector, value)
+            }
+            IrInstr::VectorGet { dst, vector, index } => {
+                self.emit_vector_get(*dst, vector, index)
+            }
+            IrInstr::VectorSet { vector, index, value } => {
+                self.emit_vector_set(vector, index, value)
+            }
+            IrInstr::MakeClosure { dst, function, captures } => {
+                self.emit_make_closure(*dst, function, captures)
+            }
+            IrInstr::ClosureCall { dst, closure, args } => {
+                self.emit_closure_call(*dst, closure, args)
+            }
+            IrInstr::GetCapture { dst, closure, idx, ty } => {
+                self.emit_get_capture(*dst, closure.clone(), *idx, ty)
+            }
             IrInstr::TypeTest {
                 dst,
                 value,
@@ -894,6 +906,70 @@ impl<'a> FunctionEmitter<'a> {
         self.emit_user_call(dst, function, args)
     }
 
+    fn emit_iterable_virtual_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        receiver: &IrValue,
+        method: &str,
+        slot: u32,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        // Load the iterable pointer (Object or Iterable IrType)
+        let recv_ptr = match self.value_type(receiver)? {
+            ty @ (IrTypeRef::Object | IrTypeRef::User(_) | IrTypeRef::Iterable(_)) => {
+                let loaded = self.read_value_as(receiver, &ty)?;
+                loaded.operand
+            }
+            other => {
+                return Err(LlvmCodegenError::UnsupportedOperation {
+                    message: format!("Iterable vcall: expected object-like receiver, found {other}"),
+                });
+            }
+        };
+
+        let fn_ptr = self.next_name("imethod");
+        self.lines.push(format!(
+            "  {fn_ptr} = call ptr @hulk_object_method(ptr {recv_ptr}, i64 {slot})"
+        ));
+
+        match method {
+            "next" => {
+                // slot 0: int next(ptr self) -> convert to i1 Boolean
+                let raw = self.next_name("next_raw");
+                self.lines.push(format!("  {raw} = call i32 {fn_ptr}(ptr {recv_ptr})"));
+                if let Some(dst) = dst {
+                    let b = self.next_name("next_bool");
+                    self.lines.push(format!("  {b} = icmp ne i32 {raw}, 0"));
+                    self.store_operand(dst, &IrTypeRef::Boolean, &b)?;
+                }
+            }
+            "current" => {
+                // Determine element type from the args list or fall back to Number
+                let elem_ty = if !args.is_empty() {
+                    match self.value_type(&args[0])? {
+                        IrTypeRef::Iterable(elem) => *elem,
+                        _ => IrTypeRef::Number,
+                    }
+                } else {
+                    IrTypeRef::Number
+                };
+                // slot 1: double current(ptr self)
+                let result = self.next_name("current");
+                self.lines.push(format!("  {result} = call double {fn_ptr}(ptr {recv_ptr})"));
+                if let Some(dst) = dst {
+                    self.store_operand(dst, &elem_ty, &result)?;
+                }
+            }
+            _ => {
+                return Err(LlvmCodegenError::UnsupportedOperation {
+                    message: format!("unknown Iterable method '{method}'"),
+                });
+            }
+        }
+        let _ = args; // already consumed above
+        Ok(())
+    }
+
     fn emit_virtual_call(
         &mut self,
         dst: Option<IrPlace>,
@@ -903,13 +979,22 @@ impl<'a> FunctionEmitter<'a> {
         slot: u32,
         args: &[IrValue],
     ) -> Result<(), LlvmCodegenError> {
-        let ty = self.types.get(receiver_static_type).ok_or_else(|| {
-            LlvmCodegenError::UnsupportedOperation {
-                message: format!(
-                    "cannot emit virtual call '{method}' for non-concrete receiver type '{receiver_static_type}'"
-                ),
+        // "Iterable" is a built-in protocol (range, vector, user generators).
+        // Dispatch through the object vtable at runtime using known slot signatures.
+        if receiver_static_type == "Iterable" {
+            return self.emit_iterable_virtual_call(dst, receiver, method, slot, args);
+        }
+
+        // For protocol/interface types not in self.types, dispatch generically via vtable.
+        // Also handle built-in "Vector" (array) type when no user-defined type shadows it.
+        if !self.types.contains_key(receiver_static_type) {
+            if receiver_static_type == "Vector" {
+                return self.emit_vector_method_call(dst, receiver, method, args);
             }
-        })?;
+            return self.emit_protocol_virtual_call(dst, receiver, method, slot, args);
+        }
+
+        let ty = self.types.get(receiver_static_type).expect("just checked");
 
         let method_fn = self.resolve_method_function(ty, method, slot)?;
         let sig = self.signatures.get(&method_fn).cloned().ok_or_else(|| {
@@ -950,6 +1035,326 @@ impl<'a> FunctionEmitter<'a> {
             self.lines.push(format!("  {call}"));
         }
 
+        Ok(())
+    }
+
+    /// Virtual call on a protocol/interface receiver: use hulk_object_method dispatch
+    /// and infer argument/return types directly from the IR values.
+    fn emit_protocol_virtual_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        receiver: &IrValue,
+        method: &str,
+        slot: u32,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let receiver_ptr = self.read_object_ptr(receiver)?;
+        let function_ptr = self.next_name("pmethod");
+        self.lines.push(format!(
+            "  {function_ptr} = call ptr @hulk_object_method(ptr {receiver_ptr}, i64 {slot})"
+        ));
+
+        // Get return type from dst place type (if any), defaulting to ptr.
+        let ret_type = if let Some(d) = dst {
+            self.place_type(d).unwrap_or(IrTypeRef::Object)
+        } else {
+            IrTypeRef::Object
+        };
+
+        let mut rendered_args = Vec::new();
+        for arg in args {
+            let arg_ty = self.value_type(arg)?;
+            let operand = self.read_value_as(arg, &arg_ty)?;
+            rendered_args.push(format!("{} {}", llvm_type(&arg_ty)?, operand.operand));
+        }
+        let ret_ty_str = llvm_type(&ret_type)?;
+        let call = format!("call {ret_ty_str} {function_ptr}({})", rendered_args.join(", "));
+        if let Some(d) = dst {
+            let result = self.next_name("pvcall");
+            self.lines.push(format!("  {result} = {call}"));
+            self.store_operand(d, &ret_type, &result)?;
+        } else {
+            self.lines.push(format!("  {call}"));
+        }
+        Ok(())
+    }
+
+    /// Dispatch Vector built-in methods (size, next, current).
+    fn emit_vector_method_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        receiver: &IrValue,
+        method: &str,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.read_object_ptr(receiver)?;
+        match method {
+            "size" => {
+                let len_i64 = self.next_name("vsize");
+                self.lines.push(format!("  {len_i64} = call i64 @hulk_vector_len(ptr {vec_ptr})"));
+                let len_f64 = self.next_name("vsize_f");
+                self.lines.push(format!("  {len_f64} = sitofp i64 {len_i64} to double"));
+                if let Some(dst) = dst {
+                    self.store_operand(dst, &IrTypeRef::Number, &len_f64)?;
+                }
+            }
+            "next" => {
+                // Returns bool-like (1 or 0); runtime uses int return.
+                let n = self.next_name("vnext_i");
+                self.lines.push(format!("  {n} = call i64 @hulk_vector_len(ptr {vec_ptr})"));
+                // Actually call hulk_vector_next via vtable slot 0
+                let fn_ptr = self.next_name("vnext_fn");
+                self.lines.push(format!("  {fn_ptr} = call ptr @hulk_object_method(ptr {vec_ptr}, i64 0)"));
+                let ret = self.next_name("vnext_ret");
+                self.lines.push(format!("  {ret} = call i1 {fn_ptr}(ptr {vec_ptr})"));
+                if let Some(dst) = dst {
+                    self.store_operand(dst, &IrTypeRef::Boolean, &ret)?;
+                }
+            }
+            "current" => {
+                let fn_ptr = self.next_name("vcurr_fn");
+                self.lines.push(format!("  {fn_ptr} = call ptr @hulk_object_method(ptr {vec_ptr}, i64 1)"));
+                let ret = self.next_name("vcurr_ret");
+                let dst_ty = dst.map(|d| self.place_type(d).unwrap_or(IrTypeRef::Number)).unwrap_or(IrTypeRef::Number);
+                let ret_ty_str = llvm_type(&dst_ty)?;
+                self.lines.push(format!("  {ret} = call {ret_ty_str} {fn_ptr}(ptr {vec_ptr})"));
+                if let Some(dst) = dst {
+                    self.store_operand(dst, &dst_ty, &ret)?;
+                }
+            }
+            _ => {
+                return Err(LlvmCodegenError::UnsupportedOperation {
+                    message: format!("unknown Vector method '{method}'"),
+                });
+            }
+        }
+        let _ = args;
+        Ok(())
+    }
+
+    fn emit_new_vector(
+        &mut self,
+        dst: IrPlace,
+        elements: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.next_name("vec");
+        self.lines.push(format!("  {vec_ptr} = call ptr @hulk_vector_new()"));
+        for elem in elements {
+            let elem_ty = self.value_type(elem)?;
+            let as_i64 = self.value_to_i64(elem, &elem_ty)?;
+            self.lines.push(format!("  call void @hulk_vector_push(ptr {vec_ptr}, i64 {as_i64})"));
+        }
+        self.lines.push(format!("  store ptr {vec_ptr}, ptr {}", self.place_ptr(dst)));
+        Ok(())
+    }
+
+    fn emit_vector_len(
+        &mut self,
+        dst: IrPlace,
+        vector: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.read_object_ptr(vector)?;
+        let len_i64 = self.next_name("vlen");
+        self.lines.push(format!("  {len_i64} = call i64 @hulk_vector_len(ptr {vec_ptr})"));
+        // Convert i64 → double (Number)
+        let len_f64 = self.next_name("vlen_f");
+        self.lines.push(format!("  {len_f64} = sitofp i64 {len_i64} to double"));
+        self.store_operand(dst, &IrTypeRef::Number, &len_f64)
+    }
+
+    fn emit_vector_push(
+        &mut self,
+        vector: &IrValue,
+        value: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.read_object_ptr(vector)?;
+        let elem_ty = self.value_type(value)?;
+        let as_i64 = self.value_to_i64(value, &elem_ty)?;
+        self.lines.push(format!("  call void @hulk_vector_push(ptr {vec_ptr}, i64 {as_i64})"));
+        Ok(())
+    }
+
+    fn emit_vector_get(
+        &mut self,
+        dst: IrPlace,
+        vector: &IrValue,
+        index: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.read_object_ptr(vector)?;
+        let idx_val = self.read_value_as(index, &IrTypeRef::Number)?;
+        let idx_i64 = self.next_name("vidx");
+        self.lines.push(format!("  {idx_i64} = fptosi double {} to i64", idx_val.operand));
+        let raw = self.next_name("vget_raw");
+        self.lines.push(format!("  {raw} = call i64 @hulk_vector_get(ptr {vec_ptr}, i64 {idx_i64})"));
+        let dst_ty = self.place_type(dst)?;
+        let result = self.i64_to_value(&raw, &dst_ty)?;
+        self.store_operand(dst, &dst_ty, &result)
+    }
+
+    fn emit_vector_set(
+        &mut self,
+        vector: &IrValue,
+        index: &IrValue,
+        value: &IrValue,
+    ) -> Result<(), LlvmCodegenError> {
+        let vec_ptr = self.read_object_ptr(vector)?;
+        let idx_val = self.read_value_as(index, &IrTypeRef::Number)?;
+        let idx_i64 = self.next_name("vidx");
+        self.lines.push(format!("  {idx_i64} = fptosi double {} to i64", idx_val.operand));
+        let elem_ty = self.value_type(value)?;
+        let as_i64 = self.value_to_i64(value, &elem_ty)?;
+        self.lines.push(format!("  call void @hulk_vector_set(ptr {vec_ptr}, i64 {idx_i64}, i64 {as_i64})"));
+        Ok(())
+    }
+
+    /// Convert a value of any IR type to i64 for vector storage.
+    fn value_to_i64(&mut self, value: &IrValue, ty: &IrTypeRef) -> Result<String, LlvmCodegenError> {
+        match ty {
+            IrTypeRef::Number => {
+                let val = self.read_value_as(value, &IrTypeRef::Number)?;
+                let cast = self.next_name("f2i");
+                self.lines.push(format!("  {cast} = bitcast double {} to i64", val.operand));
+                Ok(cast)
+            }
+            IrTypeRef::Boolean => {
+                let val = self.read_value_as(value, &IrTypeRef::Boolean)?;
+                let cast = self.next_name("b2i");
+                self.lines.push(format!("  {cast} = zext i1 {} to i64", val.operand));
+                Ok(cast)
+            }
+            IrTypeRef::Object | IrTypeRef::User(_) | IrTypeRef::String
+            | IrTypeRef::Vector(_) | IrTypeRef::Iterable(_) | IrTypeRef::Functor { .. } => {
+                let val = self.read_object_ptr(value)?;
+                let cast = self.next_name("p2i");
+                self.lines.push(format!("  {cast} = ptrtoint ptr {val} to i64"));
+                Ok(cast)
+            }
+            IrTypeRef::Unknown => Err(LlvmCodegenError::UnsupportedType { ty: ty.clone() }),
+        }
+    }
+
+    /// Convert an i64 back to the given IR type.
+    fn i64_to_value(&mut self, raw: &str, ty: &IrTypeRef) -> Result<String, LlvmCodegenError> {
+        match ty {
+            IrTypeRef::Number => {
+                let cast = self.next_name("i2f");
+                self.lines.push(format!("  {cast} = bitcast i64 {raw} to double"));
+                Ok(cast)
+            }
+            IrTypeRef::Boolean => {
+                let cast = self.next_name("i2b");
+                self.lines.push(format!("  {cast} = trunc i64 {raw} to i1"));
+                Ok(cast)
+            }
+            IrTypeRef::Object | IrTypeRef::User(_) | IrTypeRef::String
+            | IrTypeRef::Vector(_) | IrTypeRef::Iterable(_) | IrTypeRef::Functor { .. } => {
+                let cast = self.next_name("i2p");
+                self.lines.push(format!("  {cast} = inttoptr i64 {raw} to ptr"));
+                Ok(cast)
+            }
+            IrTypeRef::Unknown => Err(LlvmCodegenError::UnsupportedType { ty: ty.clone() }),
+        }
+    }
+
+    fn emit_get_capture(
+        &mut self,
+        dst: IrPlace,
+        closure: IrValue,
+        idx: usize,
+        ty: &IrTypeRef,
+    ) -> Result<(), LlvmCodegenError> {
+        let closure_ptr = self.read_object_ptr(&closure)?;
+        let raw_cap = self.next_name("cap_raw");
+        self.lines.push(format!(
+            "  {raw_cap} = call ptr @hulk_closure_get_capture(ptr {closure_ptr}, i64 {idx})"
+        ));
+        // Convert from ptr (stored as inttoptr of bit pattern) to actual type.
+        let converted = match ty {
+            IrTypeRef::Number => {
+                let as_i64 = self.next_name("cap_i64");
+                self.lines.push(format!("  {as_i64} = ptrtoint ptr {raw_cap} to i64"));
+                let as_f64 = self.next_name("cap_f64");
+                self.lines.push(format!("  {as_f64} = bitcast i64 {as_i64} to double"));
+                as_f64
+            }
+            IrTypeRef::Boolean => {
+                let as_i64 = self.next_name("cap_i64");
+                self.lines.push(format!("  {as_i64} = ptrtoint ptr {raw_cap} to i64"));
+                let as_i1 = self.next_name("cap_i1");
+                self.lines.push(format!("  {as_i1} = trunc i64 {as_i64} to i1"));
+                as_i1
+            }
+            _ => raw_cap,
+        };
+        self.store_operand(dst, ty, &converted)
+    }
+
+    fn emit_make_closure(
+        &mut self,
+        dst: IrPlace,
+        function: &str,
+        captures: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        // Look up the LLVM function name from signatures.
+        let llvm_fn_name = self.signatures.get(function)
+            .map(|sig| sig.llvm_name.clone())
+            .ok_or_else(|| LlvmCodegenError::UnknownFunction { name: function.to_string() })?;
+        let num_captures = captures.len() as u64;
+        let closure_ptr = self.next_name("closure");
+        self.lines.push(format!(
+            "  {closure_ptr} = call ptr @hulk_closure_alloc(ptr @{llvm_fn_name}, i64 {num_captures})"
+        ));
+        for (idx, cap) in captures.iter().enumerate() {
+            let cap_ty = self.value_type(cap)?;
+            let as_i64 = self.value_to_i64(cap, &cap_ty)?;
+            // Store as ptr via ptrtoint first, then inttoptr
+            let as_ptr = self.next_name("cap_ptr");
+            self.lines.push(format!("  {as_ptr} = inttoptr i64 {as_i64} to ptr"));
+            self.lines.push(format!(
+                "  call void @hulk_closure_set_capture(ptr {closure_ptr}, i64 {idx}, ptr {as_ptr})"
+            ));
+        }
+        self.store_operand(dst, &IrTypeRef::Object, &closure_ptr)
+    }
+
+    fn emit_closure_call(
+        &mut self,
+        dst: Option<IrPlace>,
+        closure: &IrValue,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        let closure_ty = self.value_type(closure)?;
+        let (param_types, ret_type) = match &closure_ty {
+            IrTypeRef::Functor { params, ret, .. } => (params.clone(), *ret.clone()),
+            _ => return Err(LlvmCodegenError::UnsupportedOperation {
+                message: format!("ClosureCall on non-functor type: {closure_ty:?}"),
+            }),
+        };
+
+        // Load the function pointer from the closure struct (first field).
+        let closure_ptr = self.read_object_ptr(closure)?;
+        let fn_ptr = self.next_name("fn_ptr");
+        self.lines.push(format!("  {fn_ptr} = load ptr, ptr {closure_ptr}"));
+
+        // New calling convention: always pass the closure itself as the first arg,
+        // then the explicit user args. The lambda extracts captures from the closure.
+        let mut rendered_args = vec![format!("ptr {closure_ptr}")];
+
+        // Explicit args.
+        for (arg, expected_ty) in args.iter().zip(param_types.iter()) {
+            let arg = self.read_value_as(arg, expected_ty)?;
+            rendered_args.push(format!("{} {}", llvm_type(expected_ty)?, arg.operand));
+        }
+
+        let ret_ty_str = llvm_type(&ret_type)?;
+        let call = format!("call {ret_ty_str} {fn_ptr}({})", rendered_args.join(", "));
+        if let Some(dst) = dst {
+            let result = self.next_name("cresult");
+            self.lines.push(format!("  {result} = {call}"));
+            self.store_operand(dst, &ret_type, &result)?;
+        } else {
+            self.lines.push(format!("  {call}"));
+        }
         Ok(())
     }
 
@@ -1007,6 +1412,7 @@ impl<'a> FunctionEmitter<'a> {
             "sqrt" | "sin" | "cos" | "exp" | "log" | "rand" => {
                 self.emit_math_builtin(dst, function, args)
             }
+            "range" => self.emit_range_builtin(dst, args),
             name => self.emit_user_call(dst, name, args),
         }
     }
@@ -1097,6 +1503,30 @@ impl<'a> FunctionEmitter<'a> {
         ));
         if let Some(dst) = dst {
             self.store_operand(dst, &IrTypeRef::Number, &result)?;
+        }
+        Ok(())
+    }
+
+    fn emit_range_builtin(
+        &mut self,
+        dst: Option<IrPlace>,
+        args: &[IrValue],
+    ) -> Result<(), LlvmCodegenError> {
+        if args.len() != 2 {
+            return Err(LlvmCodegenError::UnsupportedOperation {
+                message: "range expects 2 arguments".to_string(),
+            });
+        }
+        let start = self.read_value_as(&args[0], &IrTypeRef::Number)?;
+        let end = self.read_value_as(&args[1], &IrTypeRef::Number)?;
+        let result = self.next_name("range");
+        self.lines.push(format!(
+            "  {result} = call ptr @hulk_range(double {}, double {})",
+            start.operand, end.operand
+        ));
+        if let Some(dst) = dst {
+            let dst_ty = self.place_type(dst)?;
+            self.store_operand(dst, &dst_ty, &result)?;
         }
         Ok(())
     }
@@ -1288,7 +1718,11 @@ impl<'a> FunctionEmitter<'a> {
 
     fn read_object_ptr(&mut self, value: &IrValue) -> Result<String, LlvmCodegenError> {
         match self.value_type(value)? {
-            ty @ (IrTypeRef::Object | IrTypeRef::User(_)) => {
+            ty @ (IrTypeRef::Object
+            | IrTypeRef::User(_)
+            | IrTypeRef::Vector(_)
+            | IrTypeRef::Iterable(_)
+            | IrTypeRef::Functor { .. }) => {
                 let value = self.read_value_as(value, &ty)?;
                 Ok(value.operand)
             }
@@ -1451,6 +1885,29 @@ impl<'a> FunctionEmitter<'a> {
 
     fn is_assignable_to(&self, expected: &IrTypeRef, found: &IrTypeRef) -> bool {
         if expected == found {
+            return true;
+        }
+
+        // All pointer-typed IR values (Object, User, Iterable) compile to `ptr`
+        // in LLVM IR and can be passed between each other freely.
+        let is_ptr = |ty: &IrTypeRef| {
+            matches!(
+                ty,
+                IrTypeRef::Object | IrTypeRef::User(_) | IrTypeRef::Iterable(_)
+            )
+        };
+        if is_ptr(expected) && is_ptr(found) {
+            return true;
+        }
+
+        // Functors are assignable if they have compatible param/ret types (num_captures may differ)
+        let is_ptr_like = |ty: &IrTypeRef| {
+            matches!(
+                ty,
+                IrTypeRef::Object | IrTypeRef::User(_) | IrTypeRef::Iterable(_) | IrTypeRef::Functor { .. } | IrTypeRef::Vector(_)
+            )
+        };
+        if is_ptr_like(expected) && is_ptr_like(found) {
             return true;
         }
 

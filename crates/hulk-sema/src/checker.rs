@@ -486,8 +486,16 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         }
 
         Expr::Assign { target, value, .. } => {
+            if let Expr::VectorIndex { vector, index, .. } = target.as_ref() {
+                infer_expr(vector, env);
+                infer_expr(index, env);
+                infer_expr(value, env);
+                return Type::Unknown;
+            }
             let Expr::Var(name, _) = target.as_ref() else {
-                env.record_error(SemanticError::InvalidAssignmentTarget);
+                if !matches!(target.as_ref(), Expr::MemberAccess { object, .. } if matches!(object.as_ref(), Expr::SelfRef)) {
+                    env.record_error(SemanticError::InvalidAssignmentTarget);
+                }
                 infer_expr(value, env);
                 return Type::Unknown;
             };
@@ -915,12 +923,23 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 });
                 Type::Unknown
             } else {
-                // Any external attribute access is forbidden.
+                // Allow attribute access when the object's type equals the current class.
+                // e.g. `other.x` inside a method of the same type is fine.
                 let type_name = if let Type::UserType(ref n) = obj_ty {
                     n.clone()
                 } else {
                     String::new()
                 };
+                let same_class = env
+                    .current_type
+                    .as_deref()
+                    .map(|ct| ct == type_name)
+                    .unwrap_or(false);
+                if same_class {
+                    if let Some(ty) = env.registry.lookup_attribute(&type_name, member.as_str()) {
+                        return ty;
+                    }
+                }
                 env.record_error(SemanticError::AttributeIsPrivate {
                     type_name,
                     attr_name: member.clone(),
@@ -1046,6 +1065,20 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
             ret_type
         }
+
+        Expr::NewVector {
+            elem_type, size, init, ..
+        } => {
+            infer_expr(size, env);
+            let inner_ty = Type::from_type_ref(elem_type);
+            if let Some(init_info) = init {
+                env.push_scope();
+                env.define_var(init_info.var.clone(), inner_ty.clone());
+                infer_expr(&init_info.body, env);
+                env.pop_scope();
+            }
+            Type::Vector(Box::new(inner_ty))
+        }
     }
 }
 
@@ -1151,6 +1184,8 @@ fn is_assignable(sub: &Type, target: &Type, registry: &TypeRegistry) -> bool {
     match (sub, target) {
         (Type::UserType(sn), Type::UserType(tn)) => registry.is_descendant_of(sn, tn),
         (Type::UserType(_), Type::Object) => true,
+        // Structural typing: UserType with next()/current() satisfies Iterable(elem).
+        (Type::UserType(sn), Type::Iterable(elem)) => registry.implements_iterable(sn, elem),
         (Type::Vector(si), Type::Vector(ti)) => is_assignable(si, ti, registry),
         (Type::Iterable(si), Type::Iterable(ti)) => is_assignable(si, ti, registry),
         // A concrete Iterable value satisfies an `Iterable` protocol annotation.

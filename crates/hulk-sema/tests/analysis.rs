@@ -571,6 +571,9 @@ fn find_base_call(expr: &HirExpr) -> Option<&HirExpr> {
         HirExprKind::VectorGenerator { body, iterable, .. } => {
             find_base_call(body).or_else(|| find_base_call(iterable))
         }
+        HirExprKind::VectorNew { size, init, .. } => {
+            find_base_call(size).or_else(|| init.as_ref().and_then(|i| find_base_call(&i.body)))
+        }
         HirExprKind::VectorIndex { vector, index, .. } => {
             find_base_call(vector).or_else(|| find_base_call(index))
         }
@@ -616,6 +619,9 @@ fn contains_for(expr: &HirExpr) -> bool {
         HirExprKind::VectorLiteral { elements, .. } => elements.iter().any(contains_for),
         HirExprKind::VectorGenerator { body, iterable, .. } => {
             contains_for(body) || contains_for(iterable)
+        }
+        HirExprKind::VectorNew { size, init, .. } => {
+            contains_for(size) || init.as_ref().map_or(false, |i| contains_for(&i.body))
         }
         HirExprKind::VectorIndex { vector, index, .. } => {
             contains_for(vector) || contains_for(index)
@@ -679,6 +685,10 @@ fn find_binding<'a>(expr: &'a HirExpr, name: &str) -> Option<&'a HirLetBinding> 
         HirExprKind::VectorGenerator { body, iterable, .. } => {
             find_binding(body, name).or_else(|| find_binding(iterable, name))
         }
+        HirExprKind::VectorNew { size, init, .. } => {
+            find_binding(size, name)
+                .or_else(|| init.as_ref().and_then(|i| find_binding(&i.body, name)))
+        }
         HirExprKind::VectorIndex { vector, index, .. } => {
             find_binding(vector, name).or_else(|| find_binding(index, name))
         }
@@ -741,6 +751,8 @@ fn find_internal_iter_binding(expr: &HirExpr) -> Option<&HirLetBinding> {
         HirExprKind::VectorGenerator { body, iterable, .. } => {
             find_internal_iter_binding(body).or_else(|| find_internal_iter_binding(iterable))
         }
+        HirExprKind::VectorNew { size, init, .. } => find_internal_iter_binding(size)
+            .or_else(|| init.as_ref().and_then(|i| find_internal_iter_binding(&i.body))),
         HirExprKind::VectorIndex { vector, index, .. } => {
             find_internal_iter_binding(vector).or_else(|| find_internal_iter_binding(index))
         }

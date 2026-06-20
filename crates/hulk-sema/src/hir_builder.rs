@@ -41,6 +41,8 @@ pub enum SymbolKind {
 pub struct HirBuilder {
     registry: TypeRegistry,
     functions: HashMap<String, FunctionType>,
+    /// AST bodies of `define` macro functions, keyed by function name.
+    macro_decls: HashMap<String, FunctionDecl>,
     scopes: Vec<HashMap<String, SymbolInfo>>,
     errors: Vec<SemanticError>,
     current_type: Option<String>,
@@ -61,6 +63,7 @@ impl HirBuilder {
         Self {
             registry,
             functions: HashMap::new(),
+            macro_decls: HashMap::new(),
             scopes: vec![HashMap::new()],
             errors: Vec::new(),
             current_type: None,
@@ -120,6 +123,9 @@ impl HirBuilder {
         for decl in &program.declarations {
             if let Decl::Function(func) = decl {
                 self.register_function_signature(func);
+                if func.is_macro {
+                    self.macro_decls.insert(func.name.clone(), func.clone());
+                }
             }
         }
 
@@ -768,6 +774,11 @@ impl HirBuilder {
             value.ty.clone()
         };
 
+        // Propagate inferred type back so that methods see the correct attribute type.
+        if let Some(owner) = self.current_type.clone() {
+            self.registry.update_attribute_type(&owner, &attr.name, ty.clone());
+        }
+
         HirAttributeDecl {
             name: attr.name.clone(),
             ty,
@@ -851,6 +862,15 @@ impl HirBuilder {
                 signature.return_type.clone()
             }
         };
+
+        // Propagate inferred return type back to the registry so that any later
+        // method calls within the same type see the correct return type instead
+        // of the initial Unknown placeholder set before bodies were analysed.
+        self.registry.update_method_return_type(
+            owner_type,
+            &method.name,
+            return_type.clone(),
+        );
 
         let updated_signature = FunctionType {
             params: params.iter().map(|param| param.ty.clone()).collect(),
@@ -957,6 +977,14 @@ impl HirBuilder {
         }
     }
 
+    fn typeref_to_type(&self, ty_ref: &TypeRef) -> Type {
+        Type::from_type_ref(ty_ref)
+    }
+
+    fn analyze_expr_with_span(&mut self, _span: Span, expr: &Expr) -> HirExpr {
+        self.analyze_expr(expr)
+    }
+
     fn analyze_expr(&mut self, expr: &Expr) -> HirExpr {
         match expr {
             Expr::Number(value) => {
@@ -1035,6 +1063,12 @@ impl HirBuilder {
                 type_name,
             } => self.analyze_type_cast(*span, expr, type_name),
             Expr::VectorLiteral(elements) => self.analyze_vector_literal(elements),
+            Expr::NewVector {
+                span,
+                elem_type,
+                size,
+                init,
+            } => self.analyze_new_vector(*span, elem_type, size, init.as_ref()),
             Expr::VectorGenerator {
                 span,
                 body,
@@ -1309,6 +1343,19 @@ impl HirBuilder {
                     ty: attr_ty,
                 }
             }
+            Expr::VectorIndex { vector, index, .. } => {
+                let vec_hir = self.analyze_expr(vector);
+                let elem_ty = match &vec_hir.ty {
+                    Type::Vector(inner) => *inner.clone(),
+                    _ => Type::Number,
+                };
+                let idx_hir = self.analyze_expr(index);
+                HirAssignTarget::VectorIndex {
+                    vector: Box::new(vec_hir),
+                    index: Box::new(idx_hir),
+                    elem_ty,
+                }
+            }
             _ => {
                 self.errors.push(SemanticError::InvalidAssignmentTarget);
                 return self.make_expr(
@@ -1399,6 +1446,19 @@ impl HirBuilder {
         let elem_ty = match &iterable_hir.ty {
             Type::Iterable(inner) | Type::Vector(inner) => *inner.clone(),
             Type::Unknown => Type::Unknown,
+            Type::UserType(_) => {
+                // User-defined generator: must have current() method
+                if let Some((_, sig)) =
+                    self.method_signature_for_call(&iterable_ty, "current")
+                {
+                    sig.return_type
+                } else {
+                    self.errors.push(SemanticError::InvalidIterableTarget {
+                        found: iterable_hir.ty.clone(),
+                    });
+                    Type::Unknown
+                }
+            }
             other => {
                 self.errors.push(SemanticError::InvalidIterableTarget {
                     found: other.clone(),
@@ -1667,6 +1727,32 @@ impl HirBuilder {
         } else {
             String::new()
         };
+
+        // Allow access when the object's type equals the current class (same-class access).
+        // e.g. `other.x` inside a method of the Vector class when `other: Vector`.
+        let same_class = self
+            .current_type
+            .as_deref()
+            .map(|ct| ct == type_name)
+            .unwrap_or(false);
+        if same_class {
+            if let Some(attr_ty) = self.registry.lookup_attribute(&type_name, member) {
+                return self.make_expr(
+                    span,
+                    attr_ty.clone(),
+                    HirExprKind::MemberAccess {
+                        object: Box::new(object_hir),
+                        member: member.to_string(),
+                        resolved: ResolvedMember::Attribute {
+                            owner_type: type_name,
+                            attr_name: member.to_string(),
+                            ty: attr_ty,
+                        },
+                    },
+                );
+            }
+        }
+
         self.errors.push(SemanticError::AttributeIsPrivate {
             type_name: type_name.clone(),
             attr_name: member.to_string(),
@@ -2040,6 +2126,42 @@ impl HirBuilder {
         )
     }
 
+    fn analyze_new_vector(
+        &mut self,
+        span: Span,
+        elem_type_ref: &TypeRef,
+        size: &Expr,
+        init: Option<&hulk_frontend::ast::NewVectorInit>,
+    ) -> HirExpr {
+        use crate::hir::HirVectorNewInit;
+        let inner_ty = self.typeref_to_type(elem_type_ref);
+        let size_hir = self.analyze_expr(size);
+        let vector_ty = Type::Vector(Box::new(inner_ty.clone()));
+
+        let init_hir = init.map(|init_info| {
+            self.push_scope();
+            let sym =
+                self.define_symbol(init_info.var.clone(), inner_ty.clone(), SymbolKind::Local);
+            let body_hir = self.analyze_expr(&init_info.body);
+            self.pop_scope();
+            HirVectorNewInit {
+                var: init_info.var.clone(),
+                symbol: sym.id,
+                body: Box::new(body_hir),
+            }
+        });
+
+        self.make_expr(
+            span,
+            vector_ty,
+            HirExprKind::VectorNew {
+                size: Box::new(size_hir),
+                element_type: inner_ty,
+                init: init_hir,
+            },
+        )
+    }
+
     fn analyze_vector_generator(
         &mut self,
         span: Span,
@@ -2170,6 +2292,23 @@ impl HirBuilder {
         )
     }
 
+    /// Inline-expand a `define` macro call with call-by-name substitution.
+    fn inline_macro(
+        &mut self,
+        span: Span,
+        decl: &FunctionDecl,
+        args: &[Expr],
+    ) -> HirExpr {
+        let subst: HashMap<String, Expr> = decl
+            .params
+            .iter()
+            .zip(args.iter())
+            .map(|(p, a)| (p.name.clone(), a.clone()))
+            .collect();
+        let body = substitute_expr(&decl.body, &subst);
+        self.analyze_expr_with_span(span, &body)
+    }
+
     fn analyze_call(&mut self, span: Span, callee: &Expr, args: &[Expr]) -> HirExpr {
         let Expr::Var(name, _) = callee else {
             self.errors.push(SemanticError::UnsupportedConstruct {
@@ -2192,6 +2331,13 @@ impl HirBuilder {
                 },
             );
         };
+
+        // Inline `define` macros with call-by-name substitution.
+        if let Some(decl) = self.macro_decls.get(name).cloned() {
+            if args.len() == decl.params.len() {
+                return self.inline_macro(span, &decl, args);
+            }
+        }
 
         if let Some(signature) = self.functions.get(name).cloned() {
             let (hir_args, signature) = self.analyze_call_args(name, args, &signature);
@@ -2460,8 +2606,22 @@ impl HirBuilder {
             return true;
         }
         match (sub, target) {
-            (Type::UserType(sn), Type::UserType(tn)) => self.registry.is_descendant_of(sn, tn),
+            (Type::UserType(sn), Type::UserType(tn)) => {
+                // Inheritance check
+                if self.registry.is_descendant_of(sn, tn) {
+                    return true;
+                }
+                // Structural typing: sn implicitly conforms to protocol tn
+                if self.registry.get_protocol(tn).is_some() {
+                    return self.registry.implicitly_conforms_to_protocol(sn, tn);
+                }
+                false
+            }
             (Type::UserType(_), Type::Object) => true,
+            // Structural typing: UserType with next()/current() satisfies Iterable(elem).
+            (Type::UserType(sn), Type::Iterable(elem)) => {
+                self.registry.implements_iterable(sn, elem)
+            }
             (Type::Vector(si), Type::Vector(ti)) => self.is_assignable(si, ti),
             (Type::Iterable(si), Type::Iterable(ti)) => self.is_assignable(si, ti),
             (Type::Iterable(_), Type::UserType(n)) if n == "Iterable" => true,
@@ -2555,5 +2715,133 @@ fn method_receiver_type_name(ty: &Type) -> String {
         Type::Iterable(_) => "Iterable".to_string(),
         Type::Functor { .. } => "Functor".to_string(),
         Type::Unknown => "Unknown".to_string(),
+    }
+}
+
+/// Recursively substitute variable references in an AST expression.
+/// For each parameter name in `subst`, replace `Expr::Var(name)` with the
+/// corresponding argument expression. This implements call-by-name for `define`.
+fn substitute_expr(expr: &Expr, subst: &HashMap<String, Expr>) -> Expr {
+    match expr {
+        Expr::Var(name, span) => {
+            if let Some(replacement) = subst.get(name.as_str()) {
+                replacement.clone()
+            } else {
+                Expr::Var(name.clone(), *span)
+            }
+        }
+        Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::SelfRef => expr.clone(),
+        Expr::Unary { op, expr: inner, span } => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(substitute_expr(inner, subst)),
+            span: *span,
+        },
+        Expr::Binary { op, left, right, span } => Expr::Binary {
+            op: op.clone(),
+            left: Box::new(substitute_expr(left, subst)),
+            right: Box::new(substitute_expr(right, subst)),
+            span: *span,
+        },
+        Expr::Let { bindings, body, span } => {
+            let mut inner = subst.clone();
+            let new_bindings: Vec<_> = bindings.iter().map(|b| {
+                let new_val = substitute_expr(&b.value, &inner);
+                inner.remove(&b.name);
+                hulk_frontend::ast::LetBinding { name: b.name.clone(), ty: b.ty.clone(), value: new_val }
+            }).collect();
+            Expr::Let {
+                bindings: new_bindings,
+                body: Box::new(substitute_expr(body, &inner)),
+                span: *span,
+            }
+        }
+        Expr::Assign { target, value, span } => Expr::Assign {
+            target: Box::new(substitute_expr(target, subst)),
+            value: Box::new(substitute_expr(value, subst)),
+            span: *span,
+        },
+        Expr::Block(exprs) => Expr::Block(
+            exprs.iter().map(|e| substitute_expr(e, subst)).collect(),
+        ),
+        Expr::If { span, branches, else_branch } => Expr::If {
+            span: *span,
+            branches: branches.iter().map(|(c, b)| (substitute_expr(c, subst), substitute_expr(b, subst))).collect(),
+            else_branch: Box::new(substitute_expr(else_branch, subst)),
+        },
+        Expr::While { span, condition, body } => Expr::While {
+            span: *span,
+            condition: Box::new(substitute_expr(condition, subst)),
+            body: Box::new(substitute_expr(body, subst)),
+        },
+        Expr::For { span, var, iterable, body } => Expr::For {
+            span: *span,
+            var: var.clone(),
+            iterable: Box::new(substitute_expr(iterable, subst)),
+            body: Box::new(substitute_expr(body, subst)),
+        },
+        Expr::Call { callee, args, span } => Expr::Call {
+            callee: Box::new(substitute_expr(callee, subst)),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+            span: *span,
+        },
+        Expr::MethodCall { span, object, method, args } => Expr::MethodCall {
+            span: *span,
+            object: Box::new(substitute_expr(object, subst)),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::MemberAccess { span, object, member } => Expr::MemberAccess {
+            span: *span,
+            object: Box::new(substitute_expr(object, subst)),
+            member: member.clone(),
+        },
+        Expr::New { span, type_name, args } => Expr::New {
+            span: *span,
+            type_name: type_name.clone(),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::BaseCall { span, args } => Expr::BaseCall {
+            span: *span,
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::TypeTest { span, expr: inner, type_name } => Expr::TypeTest {
+            span: *span,
+            expr: Box::new(substitute_expr(inner, subst)),
+            type_name: type_name.clone(),
+        },
+        Expr::TypeCast { span, expr: inner, type_name } => Expr::TypeCast {
+            span: *span,
+            expr: Box::new(substitute_expr(inner, subst)),
+            type_name: type_name.clone(),
+        },
+        Expr::VectorLiteral(elements) => Expr::VectorLiteral(
+            elements.iter().map(|e| substitute_expr(e, subst)).collect(),
+        ),
+        Expr::NewVector { span, elem_type, size, init } => Expr::NewVector {
+            span: *span,
+            elem_type: elem_type.clone(),
+            size: Box::new(substitute_expr(size, subst)),
+            init: init.as_ref().map(|i| hulk_frontend::ast::NewVectorInit {
+                var: i.var.clone(),
+                body: Box::new(substitute_expr(&i.body, subst)),
+            }),
+        },
+        Expr::VectorGenerator { span, body, var, iterable } => Expr::VectorGenerator {
+            span: *span,
+            body: Box::new(substitute_expr(body, subst)),
+            var: var.clone(),
+            iterable: Box::new(substitute_expr(iterable, subst)),
+        },
+        Expr::VectorIndex { span, vector, index } => Expr::VectorIndex {
+            span: *span,
+            vector: Box::new(substitute_expr(vector, subst)),
+            index: Box::new(substitute_expr(index, subst)),
+        },
+        Expr::Lambda { span, params, return_type, body } => Expr::Lambda {
+            span: *span,
+            params: params.clone(),
+            return_type: return_type.clone(),
+            body: Box::new(substitute_expr(body, subst)),
+        },
     }
 }

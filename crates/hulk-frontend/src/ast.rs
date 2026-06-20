@@ -42,6 +42,8 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeRef>,
     pub body: Expr,
+    /// True when declared with `define` (call-by-name macro semantics).
+    pub is_macro: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -240,6 +242,13 @@ pub enum Expr {
         index: Box<Expr>,
     },
 
+    NewVector {
+        span: Span,
+        elem_type: TypeRef,
+        size: Box<Expr>,
+        init: Option<NewVectorInit>,
+    },
+
     Lambda {
         span: Span,
         params: Vec<Param>,
@@ -253,6 +262,12 @@ pub struct LetBinding {
     pub name: String,
     pub ty: Option<TypeRef>,
     pub value: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewVectorInit {
+    pub var: String,
+    pub body: Box<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

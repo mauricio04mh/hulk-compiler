@@ -316,6 +316,24 @@ impl TypeRegistry {
     }
 
     /// Returns true if `sub` is the same as `ancestor`, or inherits from it directly or transitively.
+    /// Returns true if `type_name` structurally implements Iterable(elem_type):
+    /// it must have `next(): Boolean` and `current(): elem_type`.
+    pub fn implements_iterable(&self, type_name: &str, elem_type: &Type) -> bool {
+        let Some(next_info) = self.lookup_method_info(type_name, "next") else {
+            return false;
+        };
+        if next_info.return_type != Type::Boolean && next_info.return_type != Type::Unknown {
+            return false;
+        }
+        let Some(current_info) = self.lookup_method_info(type_name, "current") else {
+            return false;
+        };
+        // The current element type must be compatible with elem_type.
+        current_info.return_type == *elem_type
+            || current_info.return_type == Type::Unknown
+            || *elem_type == Type::Unknown
+    }
+
     pub fn is_descendant_of(&self, sub: &str, ancestor: &str) -> bool {
         let mut current = Some(sub);
         while let Some(name) = current {
@@ -342,6 +360,38 @@ impl TypeRegistry {
         None
     }
 
+    /// Update an attribute's type after its initializer is analyzed (for unannotated attrs).
+    pub fn update_attribute_type(
+        &mut self,
+        type_name: &str,
+        attr_name: &str,
+        attr_type: Type,
+    ) {
+        if let Some(ti) = self.types.get_mut(type_name) {
+            if let Some(slot) = ti.attributes.get_mut(attr_name) {
+                if *slot == Type::Unknown {
+                    *slot = attr_type;
+                }
+            }
+        }
+    }
+
+    /// Update a method's return type after the body is analyzed (for unannotated methods).
+    pub fn update_method_return_type(
+        &mut self,
+        type_name: &str,
+        method_name: &str,
+        return_type: Type,
+    ) {
+        if let Some(ti) = self.types.get_mut(type_name) {
+            if let Some(mi) = ti.methods.get_mut(method_name) {
+                if mi.return_type == Type::Unknown {
+                    mi.return_type = return_type;
+                }
+            }
+        }
+    }
+
     /// Finds a method by traversing the inheritance chain upwards. Returns a cloned MethodInfo.
     /// W2d: If type_name is itself a protocol (not a concrete type), also checks protocols.
     pub fn lookup_method_info(&self, type_name: &str, method_name: &str) -> Option<MethodInfo> {
@@ -359,6 +409,30 @@ impl TypeRegistry {
         if let Some(proto) = self.protocols.get(type_name) {
             if let Some(mi) = proto.methods.get(method_name) {
                 return Some(mi.clone());
+            }
+        }
+        None
+    }
+
+    /// Finds a method and returns the concrete owner type that defines it.
+    pub fn lookup_method_owner_info(
+        &self,
+        type_name: &str,
+        method_name: &str,
+    ) -> Option<(String, MethodInfo)> {
+        let mut current = Some(type_name);
+        while let Some(name) = current {
+            let Some(ti) = self.types.get(name) else {
+                break;
+            };
+            if let Some(mi) = ti.methods.get(method_name) {
+                return Some((name.to_string(), mi.clone()));
+            }
+            current = ti.parent.as_deref();
+        }
+        if let Some(proto) = self.protocols.get(type_name) {
+            if let Some(mi) = proto.methods.get(method_name) {
+                return Some((type_name.to_string(), mi.clone()));
             }
         }
         None
@@ -404,30 +478,6 @@ impl TypeRegistry {
         } else {
             None
         }
-    }
-
-    /// Finds a method and returns the concrete owner type that defines it.
-    pub fn lookup_method_owner_info(
-        &self,
-        type_name: &str,
-        method_name: &str,
-    ) -> Option<(String, MethodInfo)> {
-        let mut current = Some(type_name);
-        while let Some(name) = current {
-            let Some(ti) = self.types.get(name) else {
-                break;
-            };
-            if let Some(mi) = ti.methods.get(method_name) {
-                return Some((name.to_string(), mi.clone()));
-            }
-            current = ti.parent.as_deref();
-        }
-        if let Some(proto) = self.protocols.get(type_name) {
-            if let Some(mi) = proto.methods.get(method_name) {
-                return Some((type_name.to_string(), mi.clone()));
-            }
-        }
-        None
     }
 
     /// Returns the nearest common ancestor of two type names in the hierarchy, or Object.

@@ -6,53 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-void hulk_runtime_error(const char* message) {
-    fprintf(stderr, "HULK runtime error: %s\n", message == NULL ? "unknown error" : message);
-    exit(1);
-}
-
-static HulkString* hulk_string_copy_from_cstr(const char* text) {
-    if (text == NULL) {
-        hulk_runtime_error("cannot create string from NULL C string");
-    }
-
-    size_t len = strlen(text);
-    char* data = malloc(len + 1);
-    if (data == NULL) {
-        hulk_runtime_error("out of memory while allocating string data");
-    }
-    memcpy(data, text, len + 1);
-
-    HulkString* string = malloc(sizeof(HulkString));
-    if (string == NULL) {
-        free(data);
-        hulk_runtime_error("out of memory while allocating string");
-    }
-
-    string->len = (long long)len;
-    string->data = data;
-    return string;
-}
-
-static HulkValue* hulk_object_attr(HulkObject* object, long long attr_id) {
-    if (object == NULL) {
-        hulk_runtime_error("object is NULL");
-    }
-    if (attr_id < 0 || attr_id >= object->attr_count) {
-        hulk_runtime_error("object attribute index out of range");
-    }
-    if (object->attrs == NULL) {
-        hulk_runtime_error("object attribute storage is NULL");
-    }
-    return &object->attrs[attr_id];
-}
-
-static void hulk_expect_attr_tag(HulkValue* value, HulkValueTag expected) {
-    if (value->tag != expected) {
-        hulk_runtime_error("object attribute has incorrect type");
-    }
-}
-
 void hulk_print_number(double value) {
     printf("%.15g\n", value);
 }
@@ -66,218 +19,299 @@ void hulk_print_string(HulkString* value) {
         puts("<null>");
         return;
     }
-
     fwrite(value->data, 1, (size_t)value->len, stdout);
     putchar('\n');
 }
 
-HulkString* hulk_string_concat(HulkString* left, HulkString* right) {
-    if (left == NULL || left->data == NULL) {
-        hulk_runtime_error("left operand of string concatenation is NULL");
-    }
-    if (right == NULL || right->data == NULL) {
-        hulk_runtime_error("right operand of string concatenation is NULL");
-    }
-    if (left->len < 0 || right->len < 0) {
-        hulk_runtime_error("string length is negative");
-    }
-
-    size_t left_len = (size_t)left->len;
-    size_t right_len = (size_t)right->len;
-    size_t len = left_len + right_len;
-    if (len < left_len || len + 1 < len) {
-        hulk_runtime_error("string concatenation length overflow");
-    }
-
-    char* data = malloc(len + 1);
-    if (data == NULL) {
-        hulk_runtime_error("out of memory while concatenating strings");
-    }
-    memcpy(data, left->data, left_len);
-    memcpy(data + left_len, right->data, right_len);
-    data[len] = '\0';
-
-    HulkString* string = malloc(sizeof(HulkString));
-    if (string == NULL) {
-        free(data);
-        hulk_runtime_error("out of memory while allocating concatenated string");
-    }
-    string->len = (long long)len;
-    string->data = data;
-    return string;
+void hulk_print_object(void) {
+    puts("<object>");
 }
 
-unsigned char hulk_string_equals(HulkString* left, HulkString* right) {
-    if (left == NULL || right == NULL) {
-        return left == right;
-    }
-    if (left->data == NULL || right->data == NULL) {
-        return left->data == right->data;
-    }
-    if (left->len != right->len) {
-        return 0;
-    }
-    if (left->len < 0) {
-        hulk_runtime_error("string length is negative");
-    }
-    return memcmp(left->data, right->data, (size_t)left->len) == 0;
+double hulk_sqrt(double value)                  { return sqrt(value); }
+double hulk_sin(double value)                   { return sin(value); }
+double hulk_cos(double value)                   { return cos(value); }
+double hulk_exp(double value)                   { return exp(value); }
+double hulk_log(double base, double value)      { return log(value) / log(base); }
+double hulk_pow(double value, double exponent)  { return pow(value, exponent); }
+double hulk_rand(void)                          { return (double)rand() / (double)RAND_MAX; }
+
+HulkString* hulk_string_concat(HulkString* a, HulkString* b) {
+    long long len = a->len + b->len;
+    char* data = (char*)malloc((size_t)(len + 1));
+    memcpy(data, a->data, (size_t)a->len);
+    memcpy(data + a->len, b->data, (size_t)b->len);
+    data[len] = '\0';
+    HulkString* result = (HulkString*)malloc(sizeof(HulkString));
+    result->len  = len;
+    result->data = data;
+    return result;
+}
+
+int hulk_string_eq(HulkString* a, HulkString* b) {
+    if (a->len != b->len) return 0;
+    return memcmp(a->data, b->data, (size_t)a->len) == 0;
+}
+
+int8_t hulk_string_equals(HulkString* a, HulkString* b) {
+    return (int8_t)hulk_string_eq(a, b);
 }
 
 HulkString* hulk_string_from_number(double value) {
-    char buffer[64];
-    int written = snprintf(buffer, sizeof(buffer), "%.15g", value);
-    if (written < 0 || (size_t)written >= sizeof(buffer)) {
-        hulk_runtime_error("failed to convert number to string");
-    }
-    return hulk_string_copy_from_cstr(buffer);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.15g", value);
+    size_t len = strlen(buf);
+    char* data = (char*)malloc(len + 1);
+    memcpy(data, buf, len + 1);
+    HulkString* s = (HulkString*)malloc(sizeof(HulkString));
+    s->len  = (long long)len;
+    s->data = data;
+    return s;
 }
 
-HulkString* hulk_string_from_bool(unsigned char value) {
-    return hulk_string_copy_from_cstr(value ? "true" : "false");
+HulkString* hulk_string_from_bool(int8_t value) {
+    const char* str = value ? "true" : "false";
+    size_t len = strlen(str);
+    char* data = (char*)malloc(len + 1);
+    memcpy(data, str, len + 1);
+    HulkString* s = (HulkString*)malloc(sizeof(HulkString));
+    s->len  = (long long)len;
+    s->data = data;
+    return s;
 }
 
-HulkObject* hulk_alloc_object(long long type_id, long long attr_count, HulkVTable* vtable) {
-    if (attr_count < 0) {
-        hulk_runtime_error("object attribute count is negative");
+void hulk_runtime_error(HulkString* msg) {
+    if (msg && msg->data) {
+        fprintf(stderr, "hulk runtime error: %.*s\n", (int)msg->len, msg->data);
+    } else {
+        fprintf(stderr, "hulk runtime error\n");
     }
-    if (vtable == NULL) {
-        hulk_runtime_error("object vtable is NULL");
-    }
-    if ((unsigned long long)attr_count > SIZE_MAX / sizeof(HulkValue)) {
-        hulk_runtime_error("object attribute allocation size overflow");
-    }
-
-    HulkObject* object = malloc(sizeof(HulkObject));
-    if (object == NULL) {
-        hulk_runtime_error("out of memory while allocating object");
-    }
-
-    object->type_id = type_id;
-    object->vtable = vtable;
-    object->attr_count = attr_count;
-    object->attrs = calloc((size_t)attr_count, sizeof(HulkValue));
-    if (attr_count > 0 && object->attrs == NULL) {
-        free(object);
-        hulk_runtime_error("out of memory while allocating object attributes");
-    }
-    return object;
+    exit(1);
 }
 
-void* hulk_object_method(HulkObject* object, long long slot) {
-    if (object == NULL) {
-        hulk_runtime_error("object is NULL");
-    }
-    if (object->vtable == NULL) {
-        hulk_runtime_error("object vtable is NULL");
-    }
-    if (slot < 0 || slot >= object->vtable->method_count) {
-        hulk_runtime_error("object method slot out of range");
-    }
-    if (object->vtable->methods == NULL) {
-        hulk_runtime_error("object method table is NULL");
-    }
-    if (object->vtable->methods[slot] == NULL) {
-        hulk_runtime_error("object method slot is NULL");
-    }
-    return object->vtable->methods[slot];
-}
+/* ── Legacy type descriptor ───────────────────────────────────────────── */
 
-unsigned char hulk_object_is(HulkObject* object, long long target_type_id) {
-    if (object == NULL) {
-        hulk_runtime_error("object is NULL");
-    }
-
-    HulkVTable* current = object->vtable;
-    while (current != NULL) {
-        if (current->type_id == target_type_id) {
-            return 1;
-        }
-        current = current->parent;
+int hulk_type_test(HulkTypeDesc* desc, int target_id) {
+    for (int i = 0; i < desc->ancestor_count; i++) {
+        if (desc->ancestors[i] == target_id) return 1;
     }
     return 0;
 }
 
-HulkObject* hulk_object_as(HulkObject* object, long long target_type_id) {
-    if (hulk_object_is(object, target_type_id)) {
-        return object;
+void hulk_type_cast_check(void* obj, int target_id) {
+    if (obj == NULL) {
+        fprintf(stderr, "hulk runtime error: type cast failed (null object)\n");
+        exit(1);
     }
-
-    hulk_runtime_error("invalid type cast");
-    return NULL;
+    /* Legacy objects store HulkTypeDesc* as first field */
+    HulkTypeDesc* desc = *(HulkTypeDesc**)obj;
+    if (!hulk_type_test(desc, target_id)) {
+        fprintf(stderr, "hulk runtime error: type cast failed\n");
+        exit(1);
+    }
 }
 
-void hulk_object_set_number(HulkObject* object, long long attr_id, double value) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    attr->tag = HULK_VALUE_NUMBER;
-    attr->as.number = value;
+/* ── Object model (vtable-based) ─────────────────────────────────────── */
+
+/* Layout: [ HulkVTable* | int64_t attrs[attr_count] ] */
+static int64_t* obj_attrs(void* obj) {
+    return (int64_t*)((char*)obj + sizeof(HulkVTable*));
 }
 
-void hulk_object_set_bool(HulkObject* object, long long attr_id, unsigned char value) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    attr->tag = HULK_VALUE_BOOL;
-    attr->as.boolean = value;
+void* hulk_alloc_object(int64_t type_id, int64_t attr_count, HulkVTable* vtable) {
+    (void)type_id;
+    size_t size = sizeof(HulkVTable*) + (size_t)attr_count * sizeof(int64_t);
+    void* obj = calloc(1, size);
+    *(HulkVTable**)obj = vtable;
+    return obj;
 }
 
-void hulk_object_set_string(HulkObject* object, long long attr_id, HulkString* value) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    attr->tag = HULK_VALUE_STRING;
-    attr->as.string = value;
+void* hulk_object_method(void* obj, int64_t slot) {
+    HulkVTable* vtable = *(HulkVTable**)obj;
+    return vtable->methods[(size_t)slot];
 }
 
-void hulk_object_set_object(HulkObject* object, long long attr_id, HulkObject* value) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    attr->tag = HULK_VALUE_OBJECT;
-    attr->as.object = value;
+int8_t hulk_object_is(void* obj, int64_t target_type_id) {
+    HulkVTable* vtable = *(HulkVTable**)obj;
+    while (vtable != NULL) {
+        if (vtable->type_id == target_type_id) return 1;
+        vtable = vtable->parent;
+    }
+    return 0;
 }
 
-double hulk_object_get_number(HulkObject* object, long long attr_id) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    hulk_expect_attr_tag(attr, HULK_VALUE_NUMBER);
-    return attr->as.number;
+void* hulk_object_as(void* obj, int64_t target_type_id) {
+    if (!hulk_object_is(obj, target_type_id)) {
+        fprintf(stderr, "hulk runtime error: invalid type cast\n");
+        exit(1);
+    }
+    return obj;
 }
 
-unsigned char hulk_object_get_bool(HulkObject* object, long long attr_id) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    hulk_expect_attr_tag(attr, HULK_VALUE_BOOL);
-    return attr->as.boolean;
+void hulk_object_set_number(void* obj, int64_t attr_id, double value) {
+    int64_t* attrs = obj_attrs(obj);
+    memcpy(&attrs[attr_id], &value, sizeof(double));
 }
 
-HulkString* hulk_object_get_string(HulkObject* object, long long attr_id) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    hulk_expect_attr_tag(attr, HULK_VALUE_STRING);
-    return attr->as.string;
+void hulk_object_set_bool(void* obj, int64_t attr_id, int8_t value) {
+    int64_t* attrs = obj_attrs(obj);
+    attrs[attr_id] = (int64_t)(uint8_t)value;
 }
 
-HulkObject* hulk_object_get_object(HulkObject* object, long long attr_id) {
-    HulkValue* attr = hulk_object_attr(object, attr_id);
-    hulk_expect_attr_tag(attr, HULK_VALUE_OBJECT);
-    return attr->as.object;
+void hulk_object_set_string(void* obj, int64_t attr_id, HulkString* value) {
+    int64_t* attrs = obj_attrs(obj);
+    memcpy(&attrs[attr_id], &value, sizeof(void*));
 }
 
-double hulk_sqrt(double value) {
-    return sqrt(value);
+void hulk_object_set_object(void* obj, int64_t attr_id, void* value) {
+    int64_t* attrs = obj_attrs(obj);
+    memcpy(&attrs[attr_id], &value, sizeof(void*));
 }
 
-double hulk_sin(double value) {
-    return sin(value);
+double hulk_object_get_number(void* obj, int64_t attr_id) {
+    int64_t* attrs = obj_attrs(obj);
+    double d;
+    memcpy(&d, &attrs[attr_id], sizeof(double));
+    return d;
 }
 
-double hulk_cos(double value) {
-    return cos(value);
+int8_t hulk_object_get_bool(void* obj, int64_t attr_id) {
+    int64_t* attrs = obj_attrs(obj);
+    return (int8_t)(attrs[attr_id] & 0xFF);
 }
 
-double hulk_exp(double value) {
-    return exp(value);
+HulkString* hulk_object_get_string(void* obj, int64_t attr_id) {
+    int64_t* attrs = obj_attrs(obj);
+    HulkString* s;
+    memcpy(&s, &attrs[attr_id], sizeof(void*));
+    return s;
 }
 
-double hulk_log(double base, double value) {
-    return log(value) / log(base);
+void* hulk_object_get_object(void* obj, int64_t attr_id) {
+    int64_t* attrs = obj_attrs(obj);
+    void* p;
+    memcpy(&p, &attrs[attr_id], sizeof(void*));
+    return p;
 }
 
-double hulk_pow(double value, double exponent) {
-    return pow(value, exponent);
+/* ── Vectors ──────────────────────────────────────────────────────────── */
+
+/* Forward declarations so we can reference them in the vtable */
+static int    hulk_vector_next_impl(HulkVector* v);
+static double hulk_vector_current_impl(HulkVector* v);
+
+static void* hulk_vector_vtable_methods[] = {
+    (void*)hulk_vector_next_impl,
+    (void*)hulk_vector_current_impl,
+};
+
+/* Static HulkVTable for all HulkVector instances.
+   type_id = -1, no parent (pure iterable, not in user hierarchy). */
+static HulkVTable hulk_vector_vtable_obj = {
+    -1,
+    NULL,
+    2,
+    hulk_vector_vtable_methods,
+};
+
+HulkVector* hulk_vector_new(void) {
+    HulkVector* v = (HulkVector*)malloc(sizeof(HulkVector));
+    v->vtable = &hulk_vector_vtable_obj;
+    v->data   = NULL;
+    v->len    = 0;
+    v->cap    = 0;
+    v->cursor = -1;
+    return v;
 }
 
-double hulk_rand(void) {
-    return (double)rand() / (double)RAND_MAX;
+void hulk_vector_push(HulkVector* v, int64_t elem) {
+    if (v->len == v->cap) {
+        int64_t new_cap = v->cap == 0 ? 8 : v->cap * 2;
+        v->data = (int64_t*)realloc(v->data, (size_t)(new_cap * (int64_t)sizeof(int64_t)));
+        v->cap  = new_cap;
+    }
+    v->data[v->len++] = elem;
+}
+
+int64_t hulk_vector_get(HulkVector* v, int64_t idx) {
+    return v->data[idx];
+}
+
+void hulk_vector_set(HulkVector* v, int64_t idx, int64_t elem) {
+    v->data[idx] = elem;
+}
+
+int64_t hulk_vector_len(HulkVector* v) {
+    return v->len;
+}
+
+static int hulk_vector_next_impl(HulkVector* v) {
+    v->cursor++;
+    return v->cursor < v->len;
+}
+
+static double hulk_vector_current_impl(HulkVector* v) {
+    int64_t bits = v->data[v->cursor];
+    double d;
+    __builtin_memcpy(&d, &bits, sizeof(d));
+    return d;
+}
+
+/* Public aliases (used in hulk_runtime.h declarations) */
+int    hulk_vector_next(HulkVector* v)    { return hulk_vector_next_impl(v); }
+double hulk_vector_current(HulkVector* v) { return hulk_vector_current_impl(v); }
+
+/* ── Ranges ───────────────────────────────────────────────────────────── */
+
+static int    hulk_range_next_impl(HulkRange* r);
+static double hulk_range_current_impl(HulkRange* r);
+
+static void* hulk_range_vtable_methods[] = {
+    (void*)hulk_range_next_impl,
+    (void*)hulk_range_current_impl,
+};
+
+/* type_id = -2 */
+static HulkVTable hulk_range_vtable_obj = {
+    -2,
+    NULL,
+    2,
+    hulk_range_vtable_methods,
+};
+
+HulkRange* hulk_range(double start, double end) {
+    HulkRange* r = (HulkRange*)malloc(sizeof(HulkRange));
+    r->vtable      = &hulk_range_vtable_obj;
+    r->current_val = start - 1.0;
+    r->end_val     = end;
+    return r;
+}
+
+static int hulk_range_next_impl(HulkRange* r) {
+    r->current_val += 1.0;
+    return r->current_val < r->end_val;
+}
+
+static double hulk_range_current_impl(HulkRange* r) {
+    return r->current_val;
+}
+
+int    hulk_range_next(HulkRange* r)    { return hulk_range_next_impl(r); }
+double hulk_range_current(HulkRange* r) { return hulk_range_current_impl(r); }
+
+/* ── Closures ─────────────────────────────────────────────────────────── */
+
+HulkClosure* hulk_closure_alloc(void* fn_ptr, int64_t num_captures) {
+    HulkClosure* c = (HulkClosure*)malloc(
+        sizeof(HulkClosure) + (size_t)(num_captures * (int64_t)sizeof(void*)));
+    c->fn_ptr       = fn_ptr;
+    c->num_captures = num_captures;
+    return c;
+}
+
+void hulk_closure_set_capture(HulkClosure* c, int64_t idx, void* val) {
+    c->captures[idx] = val;
+}
+
+void* hulk_closure_get_capture(HulkClosure* c, int64_t idx) {
+    return c->captures[idx];
 }

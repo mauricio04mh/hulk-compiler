@@ -10,6 +10,7 @@ Decl -> TypeDecl ;
 Decl -> ProtocolDecl ;
 
 FunctionDecl -> FUNCTION IDENT LPAREN ParamList RPAREN ReturnType FunctionBody ;
+FunctionDecl -> DEFINE IDENT LPAREN ParamList RPAREN ReturnType FunctionBody ;
 
 ParamList -> Param ParamListTail ;
 ParamList -> epsilon ;
@@ -29,7 +30,7 @@ TypeExpr -> IDENT TypeExprSuffix ;
 TypeExpr -> LPAREN FunctorTypeParams RPAREN FUNCARROW TypeExpr ;
 
 TypeExprSuffix -> STAR ;
-TypeExprSuffix -> LBRACKET RBRACKET ;
+TypeExprSuffix -> LBRACKET RBRACKET TypeExprSuffix ;
 TypeExprSuffix -> epsilon ;
 
 FunctorTypeParams -> TypeExpr FunctorTypeParamsTail ;
@@ -39,6 +40,7 @@ FunctorTypeParamsTail -> COMMA TypeExpr FunctorTypeParamsTail ;
 FunctorTypeParamsTail -> epsilon ;
 
 FunctionBody -> ARROW Expr SEMICOLON ;
+FunctionBody -> FUNCARROW Expr SEMICOLON ;
 FunctionBody -> BlockExpr ;
 
 TypeDecl -> TYPE IDENT TypeParamList TypeParent LBRACE TypeMemberList RBRACE ;
@@ -56,11 +58,13 @@ TypeMemberList -> TypeMember TypeMemberList ;
 TypeMemberList -> epsilon ;
 
 TypeMember -> IDENT TypeMemberTail ;
+TypeMember -> BASE TypeMemberTail ;
 
 TypeMemberTail -> TypeAnnotation EQUAL Expr SEMICOLON ;
 TypeMemberTail -> LPAREN ParamList RPAREN ReturnType FunctionBody ;
 
 ProtocolDecl -> PROTOCOL IDENT ProtocolParent LBRACE ProtocolMemberList RBRACE ;
+ProtocolDecl -> INTERFACE IDENT ProtocolParent LBRACE ProtocolMemberList RBRACE ;
 
 ProtocolParent -> EXTENDS IDENT ;
 ProtocolParent -> epsilon ;
@@ -77,7 +81,6 @@ Expr -> IfExpr ;
 Expr -> WhileExpr ;
 Expr -> ForExpr ;
 Expr -> LetExpr ;
-Expr -> BlockExpr ;
 Expr -> OperatorExpr ;
 
 IfExpr -> IF LPAREN Expr RPAREN Expr ElifList ELSE Expr ;
@@ -95,6 +98,7 @@ LetBindingTail -> COMMA LetBinding LetBindingTail ;
 LetBindingTail -> epsilon ;
 
 LetBinding -> IDENT TypeAnnotation EQUAL Expr ;
+LetBinding -> BASE TypeAnnotation EQUAL Expr ;
 
 BlockExpr -> LBRACE ExprList RBRACE ;
 
@@ -126,3 +130,5 @@ OperatorExpr -> NEW ;
 OperatorExpr -> SELF ;
 OperatorExpr -> BASE ;
 OperatorExpr -> LBRACKET ;
+OperatorExpr -> LBRACE ;
+OperatorExpr -> FUNCTION ;

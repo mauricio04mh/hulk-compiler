@@ -165,6 +165,8 @@ fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
         fs::write(&llvm_path, llvm).map_err(|err| format!("failed to write LLVM IR: {err}"))?;
 
         let compile = Command::new("clang")
+            .arg("-mllvm")
+            .arg("-opaque-pointers")
             .arg(&llvm_path)
             .arg(&runtime_path)
             .arg("-lm")

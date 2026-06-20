@@ -6,7 +6,8 @@ use hulk_ir::{
 };
 use hulk_sema::hir::{
     DispatchKind, HirAssignTarget, HirCallee, HirDecl, HirExpr, HirExprKind, HirFunctionDecl,
-    HirMethodDecl, HirParam, HirTypeDecl, ResolvedMember, SemanticProgram, SymbolId,
+    HirMethodDecl, HirParam, HirProtocolDecl, HirTypeDecl, ResolvedMember, SemanticProgram,
+    SymbolId,
 };
 use hulk_sema::types::Type;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +48,7 @@ struct LoweringContext {
     attr_ids: HashMap<(String, String), AttrId>,
     method_slots: HashMap<(String, String), MethodSlot>,
     type_decls: HashMap<String, HirTypeDecl>,
+    protocol_decls: HashMap<String, HirProtocolDecl>,
 }
 
 impl LoweringContext {
@@ -60,12 +62,72 @@ impl LoweringContext {
             functions: Vec::new(),
             type_layouts: HashMap::new(),
             attr_ids: HashMap::new(),
-            method_slots: HashMap::new(),
+            method_slots: {
+                // Pre-seed built-in iterable method slots so they resolve
+                // correctly even when no user type declares them.
+                let mut m = HashMap::new();
+                for prefix in &["Iterable", "Vector"] {
+                    m.insert((prefix.to_string(), "next".to_string()), MethodSlot(0));
+                    m.insert((prefix.to_string(), "current".to_string()), MethodSlot(1));
+                }
+                m
+            },
             type_decls: HashMap::new(),
+            protocol_decls: HashMap::new(),
+        }
+    }
+
+    /// Populate `method_slots` for protocol types so that dispatch on a
+    /// protocol-typed receiver uses the protocol's method declaration order
+    /// as the slot index.  Parent protocol methods are inherited first.
+    fn populate_protocol_slots(&mut self) {
+        let names: Vec<String> = self.protocol_decls.keys().cloned().collect();
+        let mut visited = HashSet::new();
+        for name in names {
+            self.populate_protocol_slots_for(&name, &mut visited);
+        }
+    }
+
+    fn populate_protocol_slots_for(&mut self, name: &str, visited: &mut HashSet<String>) {
+        if !visited.insert(name.to_string()) {
+            return;
+        }
+        let pd = match self.protocol_decls.get(name).cloned() {
+            Some(pd) => pd,
+            None => return,
+        };
+        // First ensure parent protocol slots are populated.
+        if let Some(parent) = &pd.parent {
+            let parent = parent.clone();
+            self.populate_protocol_slots_for(&parent, visited);
+        }
+        // Count how many slots come from parent protocol.
+        let base_slot = if let Some(parent) = &pd.parent {
+            self.protocol_decls
+                .get(parent.as_str())
+                .map(|pp| pp.methods.len() as u32)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        for (idx, method) in pd.methods.iter().enumerate() {
+            let slot = MethodSlot(base_slot + idx as u32);
+            self.method_slots
+                .entry((name.to_string(), method.name.clone()))
+                .or_insert(slot);
         }
     }
 
     fn lower_program(mut self, program: &SemanticProgram) -> Result<IrProgram, LowerError> {
+        for decl in &program.hir.declarations {
+            if let HirDecl::Protocol(pd) = decl {
+                self.protocol_decls.insert(pd.name.clone(), pd.clone());
+            }
+        }
+        // Populate method_slots for protocols (using method order as slot index).
+        // This allows dispatch on protocol-typed receivers to find the correct slot.
+        self.populate_protocol_slots();
+
         for decl in &program.hir.declarations {
             if let HirDecl::Type(td) = decl {
                 self.type_decls.insert(td.name.clone(), td.clone());
@@ -417,7 +479,14 @@ impl LoweringContext {
             HirExprKind::Let { bindings, body } => {
                 for binding in bindings {
                     let value = self.lower_expr(&binding.value, builder)?;
-                    let place = builder.new_local(binding.name.clone(), lower_type(&binding.ty));
+                    // Use the actual value's type if richer (e.g. Functor with capture_types).
+                    let declared_ty = lower_type(&binding.ty);
+                    let actual_ty = builder.value_ir_type(&value).unwrap_or(declared_ty.clone());
+                    let local_ty = match (&declared_ty, &actual_ty) {
+                        (IrTypeRef::Functor { .. }, IrTypeRef::Functor { .. }) => actual_ty,
+                        _ => declared_ty,
+                    };
+                    let place = builder.new_local(binding.name.clone(), local_ty);
                     builder.define_local_symbol(binding.symbol, place);
                     builder.body.push(IrInstr::Assign {
                         dst: place,
@@ -508,6 +577,11 @@ impl LoweringContext {
                 iterable,
                 ..
             } => self.lower_vector_generator(expr, body, var, iterable, builder),
+            HirExprKind::VectorNew {
+                size,
+                element_type,
+                init,
+            } => self.lower_vector_new(expr, size, element_type, init.as_ref(), builder),
             HirExprKind::Lambda {
                 params,
                 return_type,
@@ -615,6 +689,16 @@ impl LoweringContext {
                 builder.body.push(IrInstr::SetAttr {
                     object: self_value,
                     attr,
+                    value: value.clone(),
+                });
+                Ok(value)
+            }
+            HirAssignTarget::VectorIndex { vector, index, .. } => {
+                let vec_val = self.lower_expr(vector, builder)?;
+                let idx_val = self.lower_expr(index, builder)?;
+                builder.body.push(IrInstr::VectorSet {
+                    vector: vec_val,
+                    index: idx_val,
                     value: value.clone(),
                 });
                 Ok(value)
@@ -926,6 +1010,98 @@ impl LoweringContext {
         Ok(result.into_value())
     }
 
+    fn lower_vector_new(
+        &mut self,
+        expr: &HirExpr,
+        size: &HirExpr,
+        element_type: &Type,
+        init: Option<&hulk_sema::hir::HirVectorNewInit>,
+        builder: &mut FunctionBuilder,
+    ) -> Result<IrValue, LowerError> {
+        // Compute size before the loop
+        let size_val = self.lower_expr(size, builder)?;
+        let size_place = builder.new_local("_nv_size".to_string(), IrTypeRef::Number);
+        builder.body.push(IrInstr::Assign {
+            dst: size_place,
+            src: size_val,
+        });
+
+        // Allocate empty vector
+        let result = builder.new_temp(lower_type(&expr.ty));
+        builder.body.push(IrInstr::NewVector {
+            dst: result,
+            elements: vec![],
+        });
+
+        // Counter variable
+        let i_place = builder.new_local("_nv_i".to_string(), IrTypeRef::Number);
+        builder.body.push(IrInstr::Assign {
+            dst: i_place,
+            src: IrValue::ConstNumber(0.0),
+        });
+
+        // Expose init var symbol (maps to i_place)
+        if let Some(init_info) = init {
+            builder.define_local_symbol(init_info.symbol, i_place);
+        }
+
+        let check_lbl = builder.new_label();
+        let body_lbl = builder.new_label();
+        let end_lbl = builder.new_label();
+
+        builder.body.push(IrInstr::Label(check_lbl));
+
+        // cond = i < size
+        let cond = builder.new_temp(IrTypeRef::Boolean);
+        builder.body.push(IrInstr::Binary {
+            dst: cond,
+            op: IrBinaryOp::Lt,
+            left: i_place.into_value(),
+            right: size_place.into_value(),
+        });
+        builder.body.push(IrInstr::Branch {
+            cond: cond.into_value(),
+            then_label: body_lbl,
+            else_label: end_lbl,
+        });
+
+        builder.body.push(IrInstr::Label(body_lbl));
+
+        // Element value: use null for reference types (Vector, Object, UserType) else 0
+        let elem_val = if let Some(init_info) = init {
+            self.lower_expr(&init_info.body, builder)?
+        } else {
+            match lower_type(element_type) {
+                IrTypeRef::Number => IrValue::ConstNumber(0.0),
+                IrTypeRef::Boolean => IrValue::ConstBool(false),
+                _ => IrValue::Null,
+            }
+        };
+
+        builder.body.push(IrInstr::VectorPush {
+            vector: result.into_value(),
+            value: elem_val,
+        });
+
+        // i := i + 1
+        let next_i = builder.new_temp(IrTypeRef::Number);
+        builder.body.push(IrInstr::Binary {
+            dst: next_i,
+            op: IrBinaryOp::Add,
+            left: i_place.into_value(),
+            right: IrValue::ConstNumber(1.0),
+        });
+        builder.body.push(IrInstr::Assign {
+            dst: i_place,
+            src: next_i.into_value(),
+        });
+
+        builder.body.push(IrInstr::Jump(check_lbl));
+        builder.body.push(IrInstr::Label(end_lbl));
+
+        Ok(result.into_value())
+    }
+
     fn lower_lambda(
         &mut self,
         expr: &HirExpr,
@@ -942,7 +1118,8 @@ impl LoweringContext {
             &params.iter().map(|p| p.symbol).collect(),
             &mut captures,
         );
-        captures.retain(|symbol| builder.resolve_symbol_place(*symbol).is_some());
+        // Include params as captures too (they are in symbol_values but not symbol_places).
+        captures.retain(|symbol| builder.resolve_symbol(*symbol).is_some());
 
         let id = self.new_function_id();
         let mut lambda_builder = FunctionBuilder::new(
@@ -951,23 +1128,39 @@ impl LoweringContext {
             IrFunctionKind::Lambda,
             lower_type(return_type),
         );
+
+        // First param is always the closure itself (ptr) so captures can be loaded at runtime.
+        let closure_self_val = lambda_builder.new_param("closure_self".to_string(), IrTypeRef::Object, None);
+
+        // For each capture, emit a GetCapture instruction to extract it from the closure.
         let mut capture_values = Vec::new();
         for (idx, symbol) in captures.iter().enumerate() {
-            let value =
+            let outer_value =
                 builder
                     .resolve_symbol(*symbol)
                     .ok_or_else(|| LowerError::InternalInvariant {
                         message: "missing capture value".to_string(),
                     })?;
-            capture_values.push(value);
-            lambda_builder.new_param(format!("capture{idx}"), IrTypeRef::Object, Some(*symbol));
+            let cap_ty = builder.value_ir_type(&outer_value).unwrap_or(IrTypeRef::Object);
+            capture_values.push(outer_value);
+            // Inside the lambda, this symbol comes from GetCapture.
+            let cap_place = lambda_builder.new_temp(cap_ty.clone());
+            lambda_builder.body.push(IrInstr::GetCapture {
+                dst: cap_place,
+                closure: closure_self_val.clone(),
+                idx,
+                ty: cap_ty,
+            });
+            lambda_builder.define_local_symbol(*symbol, cap_place);
         }
+
         self.define_params(&mut lambda_builder, params);
         let value = self.lower_expr(body, &mut lambda_builder)?;
         lambda_builder.body.push(IrInstr::Return(Some(value)));
         self.functions.push(lambda_builder.finish());
 
-        let dst = builder.new_temp(lower_type(&expr.ty));
+        let lambda_ty = lower_type(&expr.ty);
+        let dst = builder.new_temp(lambda_ty);
         builder.body.push(IrInstr::MakeClosure {
             dst,
             function: name,
@@ -1094,6 +1287,18 @@ impl FunctionBuilder {
         self.symbol_places.get(&symbol).copied()
     }
 
+    fn value_ir_type(&self, value: &IrValue) -> Option<IrTypeRef> {
+        match value {
+            IrValue::Param(id) => self.params.iter().find(|p| p.id == *id).map(|p| p.ty.clone()),
+            IrValue::Local(id) => self.locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+            IrValue::Temp(id) => self.temps.iter().find(|t| t.id == *id).map(|t| t.ty.clone()),
+            IrValue::ConstNumber(_) => Some(IrTypeRef::Number),
+            IrValue::ConstBool(_) => Some(IrTypeRef::Boolean),
+            IrValue::Null | IrValue::Unit => Some(IrTypeRef::Object),
+            IrValue::DataRef(_) => Some(IrTypeRef::String),
+        }
+    }
+
     fn finish(self) -> IrFunction {
         IrFunction {
             id: self.id,
@@ -1134,7 +1339,13 @@ fn collect_captures(expr: &HirExpr, bound: &HashSet<SymbolId>, captures: &mut Ve
             collect_captures(left, bound, captures);
             collect_captures(right, bound, captures);
         }
-        HirExprKind::Assign { value, .. } => collect_captures(value, bound, captures),
+        HirExprKind::Assign { target, value } => {
+            if let HirAssignTarget::VectorIndex { vector, index, .. } = target {
+                collect_captures(vector, bound, captures);
+                collect_captures(index, bound, captures);
+            }
+            collect_captures(value, bound, captures);
+        }
         HirExprKind::Let { bindings, body } => {
             let mut next_bound = bound.clone();
             for binding in bindings {
@@ -1162,7 +1373,13 @@ fn collect_captures(expr: &HirExpr, bound: &HashSet<SymbolId>, captures: &mut Ve
             collect_captures(condition, bound, captures);
             collect_captures(body, bound, captures);
         }
-        HirExprKind::Call { args, .. } => {
+        HirExprKind::Call { callee, args } => {
+            // If the callee is a local functor, it must be captured.
+            if let HirCallee::LocalFunctor { symbol, .. } = callee {
+                if !bound.contains(symbol) && !captures.contains(symbol) {
+                    captures.push(*symbol);
+                }
+            }
             for arg in args {
                 collect_captures(arg, bound, captures);
             }
@@ -1221,6 +1438,14 @@ fn collect_captures(expr: &HirExpr, bound: &HashSet<SymbolId>, captures: &mut Ve
             next_bound.insert(var.symbol);
             collect_captures(body, &next_bound, captures);
         }
+        HirExprKind::VectorNew { size, init, .. } => {
+            collect_captures(size, bound, captures);
+            if let Some(init_info) = init {
+                let mut next_bound = bound.clone();
+                next_bound.insert(init_info.symbol);
+                collect_captures(&init_info.body, &next_bound, captures);
+            }
+        }
     }
 }
 
@@ -1263,6 +1488,7 @@ fn lower_type(ty: &Type) -> IrTypeRef {
         Type::Vector(inner) => IrTypeRef::Vector(Box::new(lower_type(inner))),
         Type::Iterable(inner) => IrTypeRef::Iterable(Box::new(lower_type(inner))),
         Type::Functor { params, ret } => IrTypeRef::Functor {
+            capture_types: Vec::new(),
             params: params.iter().map(lower_type).collect(),
             ret: Box::new(lower_type(ret)),
         },
