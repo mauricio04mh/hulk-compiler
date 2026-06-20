@@ -154,9 +154,27 @@ fn compile_to_binary(program: &hulk_frontend::ast::Program) {
     let runtime_path = find_runtime();
 
     // Invoke clang to produce ./output
-    let status = process::Command::new("clang")
-        .arg("-mllvm")
-        .arg("-opaque-pointers")
+    // clang < 16 requires -opaque-pointers to handle `ptr` type; clang 16+ removed the flag
+    let needs_opaque_flag = process::Command::new("clang")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            s.split_whitespace()
+                .skip_while(|t| *t != "version")
+                .nth(1)
+                .and_then(|v| v.split('.').next())
+                .and_then(|maj| maj.parse::<u32>().ok())
+        })
+        .map(|maj| maj < 16)
+        .unwrap_or(false);
+
+    let mut cmd = process::Command::new("clang");
+    if needs_opaque_flag {
+        cmd.arg("-mllvm").arg("-opaque-pointers");
+    }
+    let status = cmd
         .arg(&ir_path)
         .arg(&runtime_path)
         .arg("-lm")
