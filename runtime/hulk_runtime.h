@@ -7,31 +7,11 @@
 /* ── Strings ─────────────────────────────────────────────────────────── */
 
 typedef struct HulkString {
-    long long len;
+    long long   len;
     const char* data;
 } HulkString;
 
-void hulk_print_number(double value);
-void hulk_print_bool(unsigned char value);
-void hulk_print_string(HulkString* value);
-void hulk_print_object(void);
-
-double hulk_sqrt(double value);
-double hulk_sin(double value);
-double hulk_cos(double value);
-double hulk_exp(double value);
-double hulk_log(double base, double value);
-double hulk_pow(double value, double exponent);
-double hulk_rand(void);
-
-HulkString* hulk_string_concat(HulkString* a, HulkString* b);
-int         hulk_string_eq(HulkString* a, HulkString* b);
-int8_t      hulk_string_equals(HulkString* a, HulkString* b);
-HulkString* hulk_string_from_number(double value);
-HulkString* hulk_string_from_bool(int8_t value);
-void        hulk_runtime_error(HulkString* msg);
-
-/* ── Object model (vtable-based) ─────────────────────────────────────── */
+/* ── VTable ──────────────────────────────────────────────────────────── */
 
 /* Matches %HulkVTable = type { i64, ptr, i64, ptr } in generated LLVM IR.
    ALL runtime objects (including ranges and vectors) must start with a
@@ -44,11 +24,51 @@ typedef struct HulkVTable {
     void**             methods;
 } HulkVTable;
 
+/* ── Print ───────────────────────────────────────────────────────────── */
+
+void hulk_print_number(double value);
+void hulk_print_bool(unsigned char value);
+void hulk_print_string(HulkString* value);
+void hulk_print_object(void);
+
+/* ── String operations ───────────────────────────────────────────────── */
+
+HulkString* hulk_string_concat(HulkString* a, HulkString* b);
+int         hulk_string_eq(HulkString* a, HulkString* b);
+int8_t      hulk_string_equals(HulkString* a, HulkString* b);
+HulkString* hulk_string_from_number(double value);
+HulkString* hulk_string_from_bool(int8_t value);
+void        hulk_runtime_error(HulkString* msg);
+
+/* ── Math ────────────────────────────────────────────────────────────── */
+
+double hulk_sqrt(double value);
+double hulk_sin(double value);
+double hulk_cos(double value);
+double hulk_exp(double value);
+double hulk_log(double base, double value);
+double hulk_pow(double value, double exponent);
+double hulk_rand(void);
+
+/* ── Legacy type descriptor ───────────────────────────────────────────── */
+
+typedef struct HulkTypeDesc {
+    int    type_id;
+    void** vtable;
+    int    ancestor_count;
+    int*   ancestors;
+} HulkTypeDesc;
+
+int  hulk_type_test(HulkTypeDesc* desc, int target_id);
+void hulk_type_cast_check(void* obj, int target_id);
+
+/* ── Object model (vtable-based) ─────────────────────────────────────── */
+
 /* Object lifecycle */
-void*   hulk_alloc_object(int64_t type_id, int64_t attr_count, HulkVTable* vtable);
-void*   hulk_object_method(void* obj, int64_t slot);
-int8_t  hulk_object_is(void* obj, int64_t target_type_id);
-void*   hulk_object_as(void* obj, int64_t target_type_id);
+void*  hulk_alloc_object(int64_t type_id, int64_t attr_count, HulkVTable* vtable);
+void*  hulk_object_method(void* obj, int64_t slot);
+int8_t hulk_object_is(void* obj, int64_t target_type_id);
+void*  hulk_object_as(void* obj, int64_t target_type_id);
 
 /* Attribute setters */
 void hulk_object_set_number(void* obj, int64_t attr_id, double value);
@@ -61,17 +81,6 @@ double      hulk_object_get_number(void* obj, int64_t attr_id);
 int8_t      hulk_object_get_bool(void* obj, int64_t attr_id);
 HulkString* hulk_object_get_string(void* obj, int64_t attr_id);
 void*       hulk_object_get_object(void* obj, int64_t attr_id);
-
-/* Legacy (used internally by vectors/ranges) */
-typedef struct HulkTypeDesc {
-    int      type_id;
-    void**   vtable;
-    int      ancestor_count;
-    int*     ancestors;
-} HulkTypeDesc;
-
-int hulk_type_test(HulkTypeDesc* desc, int target_id);
-void hulk_type_cast_check(void* obj, int target_id);
 
 /* ── Vectors ─────────────────────────────────────────────────────────── */
 

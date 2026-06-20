@@ -431,18 +431,46 @@ impl TypeRegistry {
         None
     }
 
-    /// Resolves the parent type's method for a `base.method(...)` call.
-    /// Returns `(canonical_method_name, MethodInfo)` if found and arity matches.
-    /// `_type_name` is the current (child) type; `parent_name` is its parent.
+    /// Resolves `base(args)` from a method body.
+    ///
+    /// The regular rule is to call the parent's implementation of the current method.
+    /// As a compatibility fallback for wrapper methods, if the parent has no such method,
+    /// choose a single parent/ancestor method with matching arity and return type.
     pub fn resolve_base_method_info(
         &self,
-        _type_name: &str,
-        parent_name: &str,
-        method_name: &str,
-        _arity: usize,
+        current_type: &str,
+        parent_type: &str,
+        current_method: &str,
+        arg_count: usize,
     ) -> Option<(String, MethodInfo)> {
-        self.lookup_method_info(parent_name, method_name)
-            .map(|mi| (method_name.to_string(), mi))
+        if let Some(info) = self.lookup_method_info(parent_type, current_method) {
+            return Some((current_method.to_string(), info));
+        }
+
+        let current_info = self.lookup_method_info(current_type, current_method)?;
+        let mut matches = Vec::new();
+        let mut current = Some(parent_type);
+        let mut seen = HashSet::new();
+        while let Some(name) = current {
+            let Some(ti) = self.types.get(name) else {
+                break;
+            };
+            for (method_name, info) in &ti.methods {
+                if seen.insert(method_name.clone())
+                    && info.params.len() == arg_count
+                    && info.return_type == current_info.return_type
+                {
+                    matches.push((method_name.clone(), info.clone()));
+                }
+            }
+            current = ti.parent.as_deref();
+        }
+
+        if matches.len() == 1 {
+            matches.pop()
+        } else {
+            None
+        }
     }
 
     /// Returns the nearest common ancestor of two type names in the hierarchy, or Object.
