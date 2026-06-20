@@ -486,8 +486,16 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         }
 
         Expr::Assign { target, value, .. } => {
+            if let Expr::VectorIndex { vector, index, .. } = target.as_ref() {
+                infer_expr(vector, env);
+                infer_expr(index, env);
+                infer_expr(value, env);
+                return Type::Unknown;
+            }
             let Expr::Var(name, _) = target.as_ref() else {
-                env.record_error(SemanticError::InvalidAssignmentTarget);
+                if !matches!(target.as_ref(), Expr::MemberAccess { object, .. } if matches!(object.as_ref(), Expr::SelfRef)) {
+                    env.record_error(SemanticError::InvalidAssignmentTarget);
+                }
                 infer_expr(value, env);
                 return Type::Unknown;
             };
@@ -894,23 +902,20 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         }
 
         Expr::MemberAccess { object, member, .. } => {
-            // W3b: Attributes are private per spec. Only self.attr inside the type's own
-            // methods is allowed, and only for attributes the type itself declares.
+            // W3b: Attributes are private outside object methods. self.attr inside a
+            // subtype may reach attributes inherited through the object layout.
             let is_self = matches!(object.as_ref(), Expr::SelfRef);
             let obj_ty = infer_expr(object, env);
             if obj_ty == Type::Unknown {
                 return Type::Unknown;
             }
             if is_self {
-                // self.attr — look only in the current type's OWN attributes (not inherited).
                 let Type::UserType(ref tname) = obj_ty else {
                     return Type::Object;
                 };
                 let tname = tname.clone();
-                if let Some(ti) = env.registry.get_type(&tname) {
-                    if let Some(ty) = ti.attributes.get(member.as_str()) {
-                        return ty.clone();
-                    }
+                if let Some(ty) = env.registry.lookup_attribute(&tname, member.as_str()) {
+                    return ty;
                 }
                 env.record_error(SemanticError::AttributeIsPrivate {
                     type_name: tname,
@@ -918,12 +923,23 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 });
                 Type::Unknown
             } else {
-                // Any external attribute access is forbidden.
+                // Allow attribute access when the object's type equals the current class.
+                // e.g. `other.x` inside a method of the same type is fine.
                 let type_name = if let Type::UserType(ref n) = obj_ty {
                     n.clone()
                 } else {
                     String::new()
                 };
+                let same_class = env
+                    .current_type
+                    .as_deref()
+                    .map(|ct| ct == type_name)
+                    .unwrap_or(false);
+                if same_class {
+                    if let Some(ty) = env.registry.lookup_attribute(&type_name, member.as_str()) {
+                        return ty;
+                    }
+                }
                 env.record_error(SemanticError::AttributeIsPrivate {
                     type_name,
                     attr_name: member.clone(),
@@ -977,9 +993,19 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             // W3c: base(args) in a method body calls the parent's implementation of the
             // CURRENT method, not the parent constructor.
             let current_method = env.current_method.clone();
+            let current_type = env.current_type.clone();
             let parent_name = env.current_type_parent.clone();
 
             let Some(method_name) = current_method else {
+                env.record_error(SemanticError::UnsupportedConstruct {
+                    message: "base() can only be called inside a method body".to_string(),
+                });
+                for arg in args {
+                    infer_expr(arg, env);
+                }
+                return Type::Unknown;
+            };
+            let Some(type_name) = current_type else {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: "base() can only be called inside a method body".to_string(),
                 });
@@ -999,8 +1025,10 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             };
 
             // Look up the parent's version of the current method.
-            let parent_mi = env.registry.lookup_method_info(&pname, &method_name);
-            let Some(mi) = parent_mi else {
+            let parent_mi =
+                env.registry
+                    .resolve_base_method_info(&type_name, &pname, &method_name, args.len());
+            let Some((base_method_name, mi)) = parent_mi else {
                 env.record_error(SemanticError::UnsupportedConstruct {
                     message: format!("Parent type '{pname}' has no method '{method_name}'"),
                 });
@@ -1014,7 +1042,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
 
             if param_types.len() != args.len() {
                 env.record_error(SemanticError::ArityMismatch {
-                    function: format!("base.{method_name}"),
+                    function: format!("base.{base_method_name}"),
                     expected: param_types.len(),
                     found: args.len(),
                 });
@@ -1036,6 +1064,20 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 }
             }
             ret_type
+        }
+
+        Expr::NewVector {
+            elem_type, size, init, ..
+        } => {
+            infer_expr(size, env);
+            let inner_ty = Type::from_type_ref(elem_type);
+            if let Some(init_info) = init {
+                env.push_scope();
+                env.define_var(init_info.var.clone(), inner_ty.clone());
+                infer_expr(&init_info.body, env);
+                env.pop_scope();
+            }
+            Type::Vector(Box::new(inner_ty))
         }
     }
 }
@@ -1131,6 +1173,8 @@ fn is_assignable(sub: &Type, target: &Type, registry: &TypeRegistry) -> bool {
     match (sub, target) {
         (Type::UserType(sn), Type::UserType(tn)) => registry.is_descendant_of(sn, tn),
         (Type::UserType(_), Type::Object) => true,
+        // Structural typing: UserType with next()/current() satisfies Iterable(elem).
+        (Type::UserType(sn), Type::Iterable(elem)) => registry.implements_iterable(sn, elem),
         (Type::Vector(si), Type::Vector(ti)) => is_assignable(si, ti, registry),
         (Type::Iterable(si), Type::Iterable(ti)) => is_assignable(si, ti, registry),
         // A concrete Iterable value satisfies an `Iterable` protocol annotation.

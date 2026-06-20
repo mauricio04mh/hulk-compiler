@@ -158,10 +158,10 @@ fn builtin_constants_are_numbers() {
 fn unannotated_method_parameter_reports_cannot_infer() {
     let err = check_err_types(
         "type A {
-            f(x) => x;
+            f(x): Number => 1;
         }
 
-        1;",
+        new A().f(1);",
     );
 
     assert!(matches!(

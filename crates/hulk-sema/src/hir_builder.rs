@@ -26,7 +26,6 @@ struct PassResult {
     semantic: SemanticProgram,
     signature_changed: bool,
     functions: HashMap<String, FunctionType>,
-    methods: HashMap<String, FunctionType>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +39,8 @@ pub enum SymbolKind {
 pub struct HirBuilder {
     registry: TypeRegistry,
     functions: HashMap<String, FunctionType>,
+    /// AST bodies of `define` macro functions, keyed by function name.
+    macro_decls: HashMap<String, FunctionDecl>,
     scopes: Vec<HashMap<String, SymbolInfo>>,
     errors: Vec<SemanticError>,
     current_type: Option<String>,
@@ -47,7 +48,6 @@ pub struct HirBuilder {
     current_method: Option<String>,
     current_function: Option<String>,
     current_function_param_indices: HashMap<SymbolId, usize>,
-    method_signatures: HashMap<String, FunctionType>,
     report_unresolved_parameter_errors: bool,
     signature_changed: bool,
     next_hir_id: u32,
@@ -59,6 +59,7 @@ impl HirBuilder {
         Self {
             registry,
             functions: HashMap::new(),
+            macro_decls: HashMap::new(),
             scopes: vec![HashMap::new()],
             errors: Vec::new(),
             current_type: None,
@@ -66,7 +67,6 @@ impl HirBuilder {
             current_method: None,
             current_function: None,
             current_function_param_indices: HashMap::new(),
-            method_signatures: HashMap::new(),
             report_unresolved_parameter_errors: false,
             signature_changed: false,
             next_hir_id: 0,
@@ -76,23 +76,19 @@ impl HirBuilder {
 
     pub fn analyze_program(self, program: &Program) -> Result<SemanticProgram, Vec<SemanticError>> {
         let mut functions = HashMap::new();
-        let mut methods = HashMap::new();
 
         loop {
             let mut pass_builder = HirBuilder::new(self.registry.clone());
             pass_builder.functions = functions.clone();
-            pass_builder.method_signatures = methods.clone();
             let result = pass_builder.run_pass(program, false)?;
 
             if result.signature_changed {
                 functions = result.functions;
-                methods = result.methods;
                 continue;
             }
 
             let mut final_builder = HirBuilder::new(self.registry.clone());
             final_builder.functions = result.functions;
-            final_builder.method_signatures = result.methods;
             return final_builder
                 .run_pass(program, true)
                 .map(|result| result.semantic);
@@ -113,12 +109,9 @@ impl HirBuilder {
         for decl in &program.declarations {
             if let Decl::Function(func) = decl {
                 self.register_function_signature(func);
-            }
-        }
-
-        for decl in &program.declarations {
-            if let Decl::Type(td) = decl {
-                self.register_method_signatures(td);
+                if func.is_macro {
+                    self.macro_decls.insert(func.name.clone(), func.clone());
+                }
             }
         }
 
@@ -151,7 +144,6 @@ impl HirBuilder {
                 },
                 signature_changed: self.signature_changed,
                 functions: self.functions,
-                methods: self.method_signatures,
             })
         } else {
             Err(self.errors)
@@ -366,90 +358,6 @@ impl HirBuilder {
         );
     }
 
-    fn method_signature_key(owner_type: &str, method_name: &str) -> String {
-        format!("{owner_type}::{method_name}")
-    }
-
-    fn register_method_signatures(&mut self, td: &TypeDecl) {
-        for member in &td.members {
-            let TypeMember::Method(method) = member else {
-                continue;
-            };
-
-            let key = Self::method_signature_key(&td.name, &method.name);
-            let existing = self.method_signatures.get(&key).cloned();
-            let params = method
-                .params
-                .iter()
-                .enumerate()
-                .map(|(idx, param)| {
-                    if let Some(ty_ref) = &param.ty {
-                        let ty = Type::from_type_ref(ty_ref);
-                        self.validate_user_type(&ty);
-                        ty
-                    } else {
-                        existing
-                            .as_ref()
-                            .and_then(|signature| signature.params.get(idx))
-                            .cloned()
-                            .unwrap_or(Type::Unknown)
-                    }
-                })
-                .collect();
-
-            let return_type = if let Some(ret_ref) = &method.return_type {
-                let ty = Type::from_type_ref(ret_ref);
-                self.validate_user_type(&ty);
-                ty
-            } else {
-                existing
-                    .map(|signature| signature.return_type)
-                    .unwrap_or(Type::Unknown)
-            };
-
-            self.method_signatures.insert(
-                key,
-                FunctionType {
-                    params,
-                    return_type,
-                },
-            );
-        }
-    }
-
-    fn refine_method_param_type(
-        &mut self,
-        owner_type: &str,
-        method_name: &str,
-        idx: usize,
-        expected: &Type,
-    ) {
-        if *expected == Type::Unknown {
-            return;
-        }
-
-        let key = Self::method_signature_key(owner_type, method_name);
-        let Some(signature) = self.method_signatures.get_mut(&key) else {
-            return;
-        };
-        let Some(current) = signature.params.get(idx).cloned() else {
-            return;
-        };
-
-        if current == Type::Unknown {
-            signature.params[idx] = expected.clone();
-            self.signature_changed = true;
-            return;
-        }
-
-        if current != *expected {
-            self.errors.push(SemanticError::TypeMismatch {
-                expected: current,
-                found: expected.clone(),
-            });
-        }
-    }
-
     fn analyze_function_decl(&mut self, func: &FunctionDecl) -> HirFunctionDecl {
         let signature = self
             .functions
@@ -635,6 +543,11 @@ impl HirBuilder {
             value.ty.clone()
         };
 
+        // Propagate inferred type back so that methods see the correct attribute type.
+        if let Some(owner) = self.current_type.clone() {
+            self.registry.update_attribute_type(&owner, &attr.name, ty.clone());
+        }
+
         HirAttributeDecl {
             name: attr.name.clone(),
             ty,
@@ -647,16 +560,6 @@ impl HirBuilder {
         self.current_method = Some(method.name.clone());
         self.push_scope();
 
-        let key = Self::method_signature_key(owner_type, &method.name);
-        let signature = self
-            .method_signatures
-            .get(&key)
-            .cloned()
-            .unwrap_or(FunctionType {
-                params: Vec::new(),
-                return_type: Type::Unknown,
-            });
-
         self.define_symbol(
             "self".to_string(),
             Type::UserType(owner_type.to_string()),
@@ -665,17 +568,7 @@ impl HirBuilder {
 
         let mut params = Vec::new();
         for param in &method.params {
-            let ty = if let Some(ty_ref) = &param.ty {
-                let ty = Type::from_type_ref(ty_ref);
-                self.validate_user_type(&ty);
-                ty
-            } else {
-                signature
-                    .params
-                    .get(params.len())
-                    .cloned()
-                    .unwrap_or(Type::Unknown)
-            };
+            let ty = self.parameter_type(param, &method.name);
             let symbol = self.define_symbol(param.name.clone(), ty.clone(), SymbolKind::Parameter);
             params.push(HirParam {
                 name: param.name.clone(),
@@ -712,29 +605,17 @@ impl HirBuilder {
             }
             declared
         } else {
-            if body.ty != Type::Unknown {
-                body.ty.clone()
-            } else {
-                signature.return_type.clone()
-            }
+            body.ty.clone()
         };
 
-        let updated_signature = FunctionType {
-            params: params.iter().map(|param| param.ty.clone()).collect(),
-            return_type: return_type.clone(),
-        };
-        if self
-            .method_signatures
-            .get(&key)
-            .map(|signature| {
-                signature.params != updated_signature.params
-                    || signature.return_type != updated_signature.return_type
-            })
-            .unwrap_or(true)
-        {
-            self.signature_changed = true;
-        }
-        self.method_signatures.insert(key, updated_signature);
+        // Propagate inferred return type back to the registry so that any later
+        // method calls within the same type see the correct return type instead
+        // of the initial Unknown placeholder set before bodies were analysed.
+        self.registry.update_method_return_type(
+            owner_type,
+            &method.name,
+            return_type.clone(),
+        );
 
         HirMethodDecl {
             owner_type: owner_type.to_string(),
@@ -823,6 +704,14 @@ impl HirBuilder {
         }
     }
 
+    fn typeref_to_type(&self, ty_ref: &TypeRef) -> Type {
+        Type::from_type_ref(ty_ref)
+    }
+
+    fn analyze_expr_with_span(&mut self, _span: Span, expr: &Expr) -> HirExpr {
+        self.analyze_expr(expr)
+    }
+
     fn analyze_expr(&mut self, expr: &Expr) -> HirExpr {
         match expr {
             Expr::Number(value) => {
@@ -901,6 +790,12 @@ impl HirBuilder {
                 type_name,
             } => self.analyze_type_cast(*span, expr, type_name),
             Expr::VectorLiteral(elements) => self.analyze_vector_literal(elements),
+            Expr::NewVector {
+                span,
+                elem_type,
+                size,
+                init,
+            } => self.analyze_new_vector(*span, elem_type, size, init.as_ref()),
             Expr::VectorGenerator {
                 span,
                 body,
@@ -1175,6 +1070,19 @@ impl HirBuilder {
                     ty: attr_ty,
                 }
             }
+            Expr::VectorIndex { vector, index, .. } => {
+                let vec_hir = self.analyze_expr(vector);
+                let elem_ty = match &vec_hir.ty {
+                    Type::Vector(inner) => *inner.clone(),
+                    _ => Type::Number,
+                };
+                let idx_hir = self.analyze_expr(index);
+                HirAssignTarget::VectorIndex {
+                    vector: Box::new(vec_hir),
+                    index: Box::new(idx_hir),
+                    elem_ty,
+                }
+            }
             _ => {
                 self.errors.push(SemanticError::InvalidAssignmentTarget);
                 return self.make_expr(
@@ -1265,6 +1173,19 @@ impl HirBuilder {
         let elem_ty = match &iterable_hir.ty {
             Type::Iterable(inner) | Type::Vector(inner) => *inner.clone(),
             Type::Unknown => Type::Unknown,
+            Type::UserType(_) => {
+                // User-defined generator: must have current() method
+                if let Some((_, sig)) =
+                    self.method_signature_for_call(&iterable_ty, "current")
+                {
+                    sig.return_type
+                } else {
+                    self.errors.push(SemanticError::InvalidIterableTarget {
+                        found: iterable_hir.ty.clone(),
+                    });
+                    Type::Unknown
+                }
+            }
             other => {
                 self.errors.push(SemanticError::InvalidIterableTarget {
                     found: other.clone(),
@@ -1481,11 +1402,7 @@ impl HirBuilder {
                 );
             };
 
-            if let Some(attr_ty) = self
-                .registry
-                .get_type(&owner_type)
-                .and_then(|info| info.attributes.get(member).cloned())
-            {
+            if let Some(attr_ty) = self.registry.lookup_attribute(&owner_type, member) {
                 return self.make_expr(
                     span,
                     attr_ty.clone(),
@@ -1525,6 +1442,32 @@ impl HirBuilder {
         } else {
             String::new()
         };
+
+        // Allow access when the object's type equals the current class (same-class access).
+        // e.g. `other.x` inside a method of the Vector class when `other: Vector`.
+        let same_class = self
+            .current_type
+            .as_deref()
+            .map(|ct| ct == type_name)
+            .unwrap_or(false);
+        if same_class {
+            if let Some(attr_ty) = self.registry.lookup_attribute(&type_name, member) {
+                return self.make_expr(
+                    span,
+                    attr_ty.clone(),
+                    HirExprKind::MemberAccess {
+                        object: Box::new(object_hir),
+                        member: member.to_string(),
+                        resolved: ResolvedMember::Attribute {
+                            owner_type: type_name,
+                            attr_name: member.to_string(),
+                            ty: attr_ty,
+                        },
+                    },
+                );
+            }
+        }
+
         self.errors.push(SemanticError::AttributeIsPrivate {
             type_name: type_name.clone(),
             attr_name: member.to_string(),
@@ -1553,7 +1496,7 @@ impl HirBuilder {
     ) -> HirExpr {
         let object_hir = self.analyze_expr(object);
 
-        let Some((owner_name, signature)) = self.method_signature_for_call(&object_hir.ty, method)
+        let Some((type_name, signature)) = self.method_signature_for_call(&object_hir.ty, method)
         else {
             self.errors.push(SemanticError::UndefinedMethod {
                 type_name: method_receiver_type_name(&object_hir.ty),
@@ -1580,16 +1523,8 @@ impl HirBuilder {
             );
         };
 
-        let refine_target = self
-            .registry
-            .get_type(&owner_name)
-            .map(|_| (owner_name.as_str(), method));
-        let (hir_args, signature) = self.analyze_method_call_args(
-            &format!("{owner_name}.{method}"),
-            refine_target,
-            args,
-            &signature,
-        );
+        let hir_args =
+            self.analyze_method_call_args(&format!("{type_name}.{method}"), args, &signature);
         self.make_expr(
             span,
             signature.return_type.clone(),
@@ -1660,6 +1595,21 @@ impl HirBuilder {
                 },
             );
         };
+        let Some(current_type) = self.current_type.clone() else {
+            self.errors.push(SemanticError::UnsupportedConstruct {
+                message: "base() can only be called inside a method body".to_string(),
+            });
+            let hir_args = args.iter().map(|arg| self.analyze_expr(arg)).collect();
+            return self.make_expr(
+                span,
+                Type::Unknown,
+                HirExprKind::BaseCall {
+                    parent_type: String::new(),
+                    method_name,
+                    args: hir_args,
+                },
+            );
+        };
         let Some(parent_type) = self.current_type_parent.clone() else {
             self.errors.push(SemanticError::UnsupportedConstruct {
                 message: "Cannot use 'base' in a type without a parent".to_string(),
@@ -1676,7 +1626,12 @@ impl HirBuilder {
             );
         };
 
-        let Some(info) = self.registry.lookup_method_info(&parent_type, &method_name) else {
+        let Some((base_method_name, info)) = self.registry.resolve_base_method_info(
+            &current_type,
+            &parent_type,
+            &method_name,
+            args.len(),
+        ) else {
             self.errors.push(SemanticError::UnsupportedConstruct {
                 message: format!("Parent type '{parent_type}' has no method '{method_name}'"),
             });
@@ -1696,14 +1651,14 @@ impl HirBuilder {
             params: info.params,
             return_type: info.return_type,
         };
-        let (hir_args, signature) =
-            self.analyze_method_call_args(&format!("base.{method_name}"), None, args, &signature);
+        let hir_args =
+            self.analyze_method_call_args(&format!("base.{base_method_name}"), args, &signature);
         self.make_expr(
             span,
             signature.return_type.clone(),
             HirExprKind::BaseCall {
                 parent_type,
-                method_name,
+                method_name: base_method_name,
                 args: hir_args,
             },
         )
@@ -1874,6 +1829,42 @@ impl HirBuilder {
         )
     }
 
+    fn analyze_new_vector(
+        &mut self,
+        span: Span,
+        elem_type_ref: &TypeRef,
+        size: &Expr,
+        init: Option<&hulk_frontend::ast::NewVectorInit>,
+    ) -> HirExpr {
+        use crate::hir::HirVectorNewInit;
+        let inner_ty = self.typeref_to_type(elem_type_ref);
+        let size_hir = self.analyze_expr(size);
+        let vector_ty = Type::Vector(Box::new(inner_ty.clone()));
+
+        let init_hir = init.map(|init_info| {
+            self.push_scope();
+            let sym =
+                self.define_symbol(init_info.var.clone(), inner_ty.clone(), SymbolKind::Local);
+            let body_hir = self.analyze_expr(&init_info.body);
+            self.pop_scope();
+            HirVectorNewInit {
+                var: init_info.var.clone(),
+                symbol: sym.id,
+                body: Box::new(body_hir),
+            }
+        });
+
+        self.make_expr(
+            span,
+            vector_ty,
+            HirExprKind::VectorNew {
+                size: Box::new(size_hir),
+                element_type: inner_ty,
+                init: init_hir,
+            },
+        )
+    }
+
     fn analyze_vector_generator(
         &mut self,
         span: Span,
@@ -2004,6 +1995,23 @@ impl HirBuilder {
         )
     }
 
+    /// Inline-expand a `define` macro call with call-by-name substitution.
+    fn inline_macro(
+        &mut self,
+        span: Span,
+        decl: &FunctionDecl,
+        args: &[Expr],
+    ) -> HirExpr {
+        let subst: HashMap<String, Expr> = decl
+            .params
+            .iter()
+            .zip(args.iter())
+            .map(|(p, a)| (p.name.clone(), a.clone()))
+            .collect();
+        let body = substitute_expr(&decl.body, &subst);
+        self.analyze_expr_with_span(span, &body)
+    }
+
     fn analyze_call(&mut self, span: Span, callee: &Expr, args: &[Expr]) -> HirExpr {
         let Expr::Var(name, _) = callee else {
             self.errors.push(SemanticError::UnsupportedConstruct {
@@ -2026,6 +2034,13 @@ impl HirBuilder {
                 },
             );
         };
+
+        // Inline `define` macros with call-by-name substitution.
+        if let Some(decl) = self.macro_decls.get(name).cloned() {
+            if args.len() == decl.params.len() {
+                return self.inline_macro(span, &decl, args);
+            }
+        }
 
         if let Some(signature) = self.functions.get(name).cloned() {
             let (hir_args, signature) = self.analyze_call_args(name, args, &signature);
@@ -2155,12 +2170,10 @@ impl HirBuilder {
     fn analyze_method_call_args(
         &mut self,
         name: &str,
-        refine_target: Option<(&str, &str)>,
         args: &[Expr],
         signature: &FunctionType,
-    ) -> (Vec<HirExpr>, FunctionType) {
+    ) -> Vec<HirExpr> {
         let mut hir_args = Vec::new();
-        let mut signature = signature.clone();
 
         if signature.params.len() != args.len() {
             self.errors.push(SemanticError::ArityMismatch {
@@ -2171,17 +2184,11 @@ impl HirBuilder {
             for arg in args {
                 hir_args.push(self.analyze_expr(arg));
             }
-            return (hir_args, signature);
+            return hir_args;
         }
 
         for (idx, arg) in args.iter().enumerate() {
             let hir_arg = self.analyze_expr(arg);
-            if let Some((owner_type, method_name)) = refine_target {
-                if signature.params[idx] == Type::Unknown && hir_arg.ty != Type::Unknown {
-                    self.refine_method_param_type(owner_type, method_name, idx, &hir_arg.ty);
-                    signature.params[idx] = hir_arg.ty.clone();
-                }
-            }
             if !self.is_assignable(&hir_arg.ty, &signature.params[idx]) {
                 self.errors.push(SemanticError::InvalidArgumentType {
                     function: name.to_string(),
@@ -2193,7 +2200,7 @@ impl HirBuilder {
             hir_args.push(hir_arg);
         }
 
-        (hir_args, signature)
+        hir_args
     }
 
     fn method_signature_for_call(
@@ -2202,21 +2209,19 @@ impl HirBuilder {
         method: &str,
     ) -> Option<(String, FunctionType)> {
         match obj_ty {
-            Type::UserType(type_name) => self
-                .registry
-                .lookup_method_owner_info(type_name, method)
-                .map(|(owner, info)| {
-                    let key = Self::method_signature_key(&owner, method);
-                    let signature =
-                        self.method_signatures
-                            .get(&key)
-                            .cloned()
-                            .unwrap_or(FunctionType {
+            Type::UserType(type_name) => {
+                self.registry
+                    .lookup_method_info(type_name, method)
+                    .map(|info| {
+                        (
+                            type_name.clone(),
+                            FunctionType {
                                 params: info.params,
                                 return_type: info.return_type,
-                            });
-                    (owner, signature)
-                }),
+                            },
+                        )
+                    })
+            }
             Type::Vector(inner) => match method {
                 "next" => Some((
                     "Vector".to_string(),
@@ -2283,8 +2288,22 @@ impl HirBuilder {
             return true;
         }
         match (sub, target) {
-            (Type::UserType(sn), Type::UserType(tn)) => self.registry.is_descendant_of(sn, tn),
+            (Type::UserType(sn), Type::UserType(tn)) => {
+                // Inheritance check
+                if self.registry.is_descendant_of(sn, tn) {
+                    return true;
+                }
+                // Structural typing: sn implicitly conforms to protocol tn
+                if self.registry.get_protocol(tn).is_some() {
+                    return self.registry.implicitly_conforms_to_protocol(sn, tn);
+                }
+                false
+            }
             (Type::UserType(_), Type::Object) => true,
+            // Structural typing: UserType with next()/current() satisfies Iterable(elem).
+            (Type::UserType(sn), Type::Iterable(elem)) => {
+                self.registry.implements_iterable(sn, elem)
+            }
             (Type::Vector(si), Type::Vector(ti)) => self.is_assignable(si, ti),
             (Type::Iterable(si), Type::Iterable(ti)) => self.is_assignable(si, ti),
             (Type::Iterable(_), Type::UserType(n)) if n == "Iterable" => true,
@@ -2378,5 +2397,133 @@ fn method_receiver_type_name(ty: &Type) -> String {
         Type::Iterable(_) => "Iterable".to_string(),
         Type::Functor { .. } => "Functor".to_string(),
         Type::Unknown => "Unknown".to_string(),
+    }
+}
+
+/// Recursively substitute variable references in an AST expression.
+/// For each parameter name in `subst`, replace `Expr::Var(name)` with the
+/// corresponding argument expression. This implements call-by-name for `define`.
+fn substitute_expr(expr: &Expr, subst: &HashMap<String, Expr>) -> Expr {
+    match expr {
+        Expr::Var(name, span) => {
+            if let Some(replacement) = subst.get(name.as_str()) {
+                replacement.clone()
+            } else {
+                Expr::Var(name.clone(), *span)
+            }
+        }
+        Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::SelfRef => expr.clone(),
+        Expr::Unary { op, expr: inner, span } => Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(substitute_expr(inner, subst)),
+            span: *span,
+        },
+        Expr::Binary { op, left, right, span } => Expr::Binary {
+            op: op.clone(),
+            left: Box::new(substitute_expr(left, subst)),
+            right: Box::new(substitute_expr(right, subst)),
+            span: *span,
+        },
+        Expr::Let { bindings, body, span } => {
+            let mut inner = subst.clone();
+            let new_bindings: Vec<_> = bindings.iter().map(|b| {
+                let new_val = substitute_expr(&b.value, &inner);
+                inner.remove(&b.name);
+                hulk_frontend::ast::LetBinding { name: b.name.clone(), ty: b.ty.clone(), value: new_val }
+            }).collect();
+            Expr::Let {
+                bindings: new_bindings,
+                body: Box::new(substitute_expr(body, &inner)),
+                span: *span,
+            }
+        }
+        Expr::Assign { target, value, span } => Expr::Assign {
+            target: Box::new(substitute_expr(target, subst)),
+            value: Box::new(substitute_expr(value, subst)),
+            span: *span,
+        },
+        Expr::Block(exprs) => Expr::Block(
+            exprs.iter().map(|e| substitute_expr(e, subst)).collect(),
+        ),
+        Expr::If { span, branches, else_branch } => Expr::If {
+            span: *span,
+            branches: branches.iter().map(|(c, b)| (substitute_expr(c, subst), substitute_expr(b, subst))).collect(),
+            else_branch: Box::new(substitute_expr(else_branch, subst)),
+        },
+        Expr::While { span, condition, body } => Expr::While {
+            span: *span,
+            condition: Box::new(substitute_expr(condition, subst)),
+            body: Box::new(substitute_expr(body, subst)),
+        },
+        Expr::For { span, var, iterable, body } => Expr::For {
+            span: *span,
+            var: var.clone(),
+            iterable: Box::new(substitute_expr(iterable, subst)),
+            body: Box::new(substitute_expr(body, subst)),
+        },
+        Expr::Call { callee, args, span } => Expr::Call {
+            callee: Box::new(substitute_expr(callee, subst)),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+            span: *span,
+        },
+        Expr::MethodCall { span, object, method, args } => Expr::MethodCall {
+            span: *span,
+            object: Box::new(substitute_expr(object, subst)),
+            method: method.clone(),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::MemberAccess { span, object, member } => Expr::MemberAccess {
+            span: *span,
+            object: Box::new(substitute_expr(object, subst)),
+            member: member.clone(),
+        },
+        Expr::New { span, type_name, args } => Expr::New {
+            span: *span,
+            type_name: type_name.clone(),
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::BaseCall { span, args } => Expr::BaseCall {
+            span: *span,
+            args: args.iter().map(|a| substitute_expr(a, subst)).collect(),
+        },
+        Expr::TypeTest { span, expr: inner, type_name } => Expr::TypeTest {
+            span: *span,
+            expr: Box::new(substitute_expr(inner, subst)),
+            type_name: type_name.clone(),
+        },
+        Expr::TypeCast { span, expr: inner, type_name } => Expr::TypeCast {
+            span: *span,
+            expr: Box::new(substitute_expr(inner, subst)),
+            type_name: type_name.clone(),
+        },
+        Expr::VectorLiteral(elements) => Expr::VectorLiteral(
+            elements.iter().map(|e| substitute_expr(e, subst)).collect(),
+        ),
+        Expr::NewVector { span, elem_type, size, init } => Expr::NewVector {
+            span: *span,
+            elem_type: elem_type.clone(),
+            size: Box::new(substitute_expr(size, subst)),
+            init: init.as_ref().map(|i| hulk_frontend::ast::NewVectorInit {
+                var: i.var.clone(),
+                body: Box::new(substitute_expr(&i.body, subst)),
+            }),
+        },
+        Expr::VectorGenerator { span, body, var, iterable } => Expr::VectorGenerator {
+            span: *span,
+            body: Box::new(substitute_expr(body, subst)),
+            var: var.clone(),
+            iterable: Box::new(substitute_expr(iterable, subst)),
+        },
+        Expr::VectorIndex { span, vector, index } => Expr::VectorIndex {
+            span: *span,
+            vector: Box::new(substitute_expr(vector, subst)),
+            index: Box::new(substitute_expr(index, subst)),
+        },
+        Expr::Lambda { span, params, return_type, body } => Expr::Lambda {
+            span: *span,
+            params: params.clone(),
+            return_type: return_type.clone(),
+            body: Box::new(substitute_expr(body, subst)),
+        },
     }
 }

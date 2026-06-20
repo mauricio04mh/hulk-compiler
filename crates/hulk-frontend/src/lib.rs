@@ -291,6 +291,17 @@ fn hulk_pratt_parser() -> PrattParser {
         rbracket: Some("RBRACKET".to_string()),
         arrow: Some("ARROW".to_string()),
         funcarrow: Some("FUNCARROW".to_string()),
+        if_kw: Some("IF".to_string()),
+        elif_kw: Some("ELIF".to_string()),
+        else_kw: Some("ELSE".to_string()),
+        while_kw: Some("WHILE".to_string()),
+        for_kw: Some("FOR".to_string()),
+        in_kw: Some("IN".to_string()),
+        lbrace: Some("LBRACE".to_string()),
+        rbrace: Some("RBRACE".to_string()),
+        semicolon: Some("SEMICOLON".to_string()),
+        function_kw: Some("FUNCTION".to_string()),
+        let_kw: Some("LET".to_string()),
     })
 }
 

@@ -193,6 +193,10 @@ impl Resolver {
                     {
                         self.resolve_expr(object)?;
                     }
+                    Expr::VectorIndex { vector, index, .. } => {
+                        self.resolve_expr(vector)?;
+                        self.resolve_expr(index)?;
+                    }
                     _ => return Err(SemanticError::InvalidAssignmentTarget),
                 }
                 self.resolve_expr(value)
@@ -320,6 +324,20 @@ impl Resolver {
             Expr::BaseCall { args, .. } => {
                 for arg in args {
                     self.resolve_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::NewVector { size, init, .. } => {
+                self.resolve_expr(size)?;
+                if let Some(init_info) = init {
+                    self.scopes.push();
+                    self.scopes.define(Symbol {
+                        name: init_info.var.clone(),
+                        kind: SymbolKind::Variable,
+                    })?;
+                    let result = self.resolve_expr(&init_info.body);
+                    self.scopes.pop();
+                    result?;
                 }
                 Ok(())
             }

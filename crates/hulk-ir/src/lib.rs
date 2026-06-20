@@ -45,6 +45,7 @@ pub enum IrTypeRef {
     Vector(Box<IrTypeRef>),
     Iterable(Box<IrTypeRef>),
     Functor {
+        capture_types: Vec<IrTypeRef>,
         params: Vec<IrTypeRef>,
         ret: Box<IrTypeRef>,
     },
@@ -267,6 +268,12 @@ pub enum IrInstr {
         dst: Option<IrPlace>,
         closure: IrValue,
         args: Vec<IrValue>,
+    },
+    GetCapture {
+        dst: IrPlace,
+        closure: IrValue,
+        idx: usize,
+        ty: IrTypeRef,
     },
     TypeTest {
         dst: IrPlace,
@@ -531,6 +538,9 @@ impl fmt::Display for IrInstr {
                 }
                 write!(f, "closure_call {closure}({})", display_list(args))
             }
+            IrInstr::GetCapture { dst, closure, idx, ty } => {
+                write!(f, "{dst} = get_capture {closure}[{idx}]: {ty}")
+            }
             IrInstr::TypeTest {
                 dst,
                 value,
@@ -582,7 +592,7 @@ impl fmt::Display for IrTypeRef {
             IrTypeRef::User(name) => write!(f, "{name}"),
             IrTypeRef::Vector(inner) => write!(f, "{}[]", inner),
             IrTypeRef::Iterable(inner) => write!(f, "{}*", inner),
-            IrTypeRef::Functor { params, ret } => {
+            IrTypeRef::Functor { params, ret, .. } => {
                 write!(f, "({}) -> {}", display_list(params), ret)
             }
             IrTypeRef::Unknown => write!(f, "Unknown"),

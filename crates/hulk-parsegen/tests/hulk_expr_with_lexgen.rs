@@ -131,6 +131,17 @@ fn hulk_pratt_parser() -> PrattParser {
         rbracket: None,
         arrow: None,
         funcarrow: None,
+        if_kw: None,
+        elif_kw: None,
+        else_kw: None,
+        while_kw: None,
+        for_kw: None,
+        in_kw: None,
+        lbrace: None,
+        rbrace: None,
+        semicolon: None,
+        function_kw: None,
+        let_kw: None,
     })
 }
 

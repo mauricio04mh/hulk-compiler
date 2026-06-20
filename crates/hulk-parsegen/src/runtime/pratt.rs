@@ -34,6 +34,17 @@ pub struct PrattConfig {
     pub rbracket: Option<String>,
     pub arrow: Option<String>,
     pub funcarrow: Option<String>,
+    pub if_kw: Option<String>,
+    pub elif_kw: Option<String>,
+    pub else_kw: Option<String>,
+    pub while_kw: Option<String>,
+    pub for_kw: Option<String>,
+    pub in_kw: Option<String>,
+    pub lbrace: Option<String>,
+    pub rbrace: Option<String>,
+    pub semicolon: Option<String>,
+    pub function_kw: Option<String>,
+    pub let_kw: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -386,7 +397,7 @@ impl<'a> PrattState<'a> {
             expected: vec!["IDENT".to_string()],
         })?;
 
-        if ident.kind != "IDENT" {
+        if !self.is_identifier_kind(&ident.kind) {
             return Err(ParseError {
                 message: "Expected identifier after '.'".to_string(),
                 line: ident.line,
@@ -395,6 +406,12 @@ impl<'a> PrattState<'a> {
                 expected: vec!["IDENT".to_string()],
             });
         }
+        // Normalize BASE → IDENT so the builder finds it
+        let ident = if ident.kind != "IDENT" {
+            ParseToken::new("IDENT", &ident.lexeme, ident.line, ident.column)
+        } else {
+            ident
+        };
 
         self.advance();
 
@@ -523,7 +540,24 @@ impl<'a> PrattState<'a> {
         if let Some(base_kw) = &self.config.base_kw
             && tok.kind == *base_kw
         {
-            self.advance();
+            // `base` is contextual: only a base call when followed by `(`
+            // otherwise treat it as a plain identifier
+            self.advance(); // consume BASE token
+            let next_is_lparen = self
+                .current()
+                .map(|t| t.kind == self.config.lparen)
+                .unwrap_or(false);
+
+            if !next_is_lparen {
+                // Treat as identifier
+                return Ok(CstNode::Token {
+                    kind: "IDENT".to_string(),
+                    lexeme: tok.lexeme.clone(),
+                    line: tok.line,
+                    column: tok.column,
+                });
+            }
+
             let Some(open) = self.current().cloned() else {
                 return Err(ParseError {
                     message: "Expected '(' after base".to_string(),
@@ -572,6 +606,185 @@ impl<'a> PrattState<'a> {
             }
             self.advance();
 
+            // Check if array allocation: new T[N], new T[N]{ i -> body }, or new T[][N]
+            if let Some(lb) = self.config.lbracket.clone() {
+                if let Some(curr) = self.current()
+                    && curr.kind == lb
+                {
+                    self.advance(); // consume [
+
+                    let rb_kind = self
+                        .config
+                        .rbracket
+                        .clone()
+                        .unwrap_or_else(|| "RBRACKET".to_string());
+
+                    // Detect `new T[][N]`: empty [] means element type is T[]
+                    let elem_type_node = if let Some(curr) = self.current()
+                        && curr.kind == rb_kind
+                    {
+                        // Empty brackets: this is `new T[][...]`
+                        self.advance(); // consume ]
+                        // Must be followed by another [
+                        if let Some(curr) = self.current()
+                            && curr.kind == lb
+                        {
+                            self.advance(); // consume [
+                        } else {
+                            return Err(ParseError {
+                                message: "Expected '[' after '[]' in new T[][N] expression"
+                                    .to_string(),
+                                line: tok.line,
+                                column: tok.column,
+                                found: self.current().map(|c| c.kind.clone()),
+                                expected: vec![lb.clone()],
+                            });
+                        }
+                        // Element type is T[] (a vector of T)
+                        CstNode::node("TypeVector", vec![CstNode::token(&ident)])
+                    } else {
+                        // Normal case: element type is just T
+                        CstNode::token(&ident)
+                    };
+
+                    // Parse size expression stopping at ]
+                    let start_pos = self.pos;
+                    let remaining = &self.tokens[start_pos..];
+                    let mut size_stops = HashSet::new();
+                    size_stops.insert(rb_kind.clone());
+                    let (size_expr, consumed) =
+                        PrattParser::from_arc(Arc::clone(&self.config))
+                            .parse_expression_until(remaining, &size_stops)
+                            .map_err(|e| ParseError {
+                                message: format!(
+                                    "Error in array size expression: {}",
+                                    e.message
+                                ),
+                                line: tok.line,
+                                column: tok.column,
+                                found: e.found,
+                                expected: e.expected,
+                            })?;
+                    self.pos += consumed;
+
+                    // consume ]
+                    self.expect_rbracket(&tok, &rb_kind)?;
+
+                    // Optional initializer: { var -> body }
+                    let lbrace_kind = self
+                        .config
+                        .lbrace
+                        .clone()
+                        .unwrap_or_else(|| "LBRACE".to_string());
+                    let rbrace_kind = self
+                        .config
+                        .rbrace
+                        .clone()
+                        .unwrap_or_else(|| "RBRACE".to_string());
+                    let funcarrow_kind = self
+                        .config
+                        .funcarrow
+                        .clone()
+                        .unwrap_or_else(|| "FUNCARROW".to_string());
+
+                    if let Some(curr) = self.current()
+                        && curr.kind == lbrace_kind
+                    {
+                        self.advance(); // consume {
+
+                        // Parse init var name
+                        let init_var = self.current().cloned().ok_or_else(|| ParseError {
+                            message: "Expected variable name in array initializer".to_string(),
+                            line: tok.line,
+                            column: tok.column,
+                            found: None,
+                            expected: vec!["IDENT".to_string()],
+                        })?;
+                        if init_var.kind != "IDENT" {
+                            return Err(ParseError {
+                                message: "Expected variable name in array initializer"
+                                    .to_string(),
+                                line: init_var.line,
+                                column: init_var.column,
+                                found: Some(init_var.kind.clone()),
+                                expected: vec!["IDENT".to_string()],
+                            });
+                        }
+                        self.advance(); // consume IDENT
+
+                        // consume ->
+                        let arrow_tok = self.current().cloned().ok_or_else(|| ParseError {
+                            message: "Expected '->' in array initializer".to_string(),
+                            line: tok.line,
+                            column: tok.column,
+                            found: None,
+                            expected: vec![funcarrow_kind.clone()],
+                        })?;
+                        if arrow_tok.kind != funcarrow_kind {
+                            return Err(ParseError {
+                                message: "Expected '->' in array initializer".to_string(),
+                                line: arrow_tok.line,
+                                column: arrow_tok.column,
+                                found: Some(arrow_tok.kind.clone()),
+                                expected: vec![funcarrow_kind.clone()],
+                            });
+                        }
+                        self.advance(); // consume ->
+
+                        // Parse initializer body expression (stops at })
+                        let start_pos = self.pos;
+                        let remaining = &self.tokens[start_pos..];
+                        let mut body_stops = HashSet::new();
+                        body_stops.insert(rbrace_kind.clone());
+                        let (init_body, consumed) =
+                            PrattParser::from_arc(Arc::clone(&self.config))
+                                .parse_expression_until(remaining, &body_stops)
+                                .map_err(|e| ParseError {
+                                    message: format!(
+                                        "Error in array initializer: {}",
+                                        e.message
+                                    ),
+                                    line: tok.line,
+                                    column: tok.column,
+                                    found: e.found,
+                                    expected: e.expected,
+                                })?;
+                        self.pos += consumed;
+
+                        // consume }
+                        let close = self.current().cloned().ok_or_else(|| ParseError {
+                            message: "Expected '}' to close array initializer".to_string(),
+                            line: tok.line,
+                            column: tok.column,
+                            found: None,
+                            expected: vec![rbrace_kind.clone()],
+                        })?;
+                        if close.kind != rbrace_kind {
+                            return Err(ParseError {
+                                message: "Expected '}' to close array initializer".to_string(),
+                                line: close.line,
+                                column: close.column,
+                                found: Some(close.kind.clone()),
+                                expected: vec![rbrace_kind.clone()],
+                            });
+                        }
+                        self.advance(); // consume }
+
+                        let mut children =
+                            vec![elem_type_node, size_expr, CstNode::token(&init_var)];
+                        children.push(CstNode::node("Expr", vec![init_body]));
+                        return Ok(CstNode::node("NewArrayExpr", children));
+                    }
+
+                    // No initializer: new T[N] or new T[][N]
+                    return Ok(CstNode::node(
+                        "NewArrayExpr",
+                        vec![elem_type_node, size_expr],
+                    ));
+                }
+            }
+
+            // Constructor call: new T(args)
             let Some(open) = self.current().cloned() else {
                 return Err(ParseError {
                     message: "Expected '(' after type name in new".to_string(),
@@ -647,6 +860,43 @@ impl<'a> PrattState<'a> {
             return Ok(CstNode::token(&tok));
         }
 
+        // Control-flow expressions used as sub-expressions in binary ops
+        if let Some(if_kw) = &self.config.if_kw
+            && tok.kind == *if_kw
+        {
+            return self.parse_if_subexpr(tok);
+        }
+
+        if let Some(while_kw) = &self.config.while_kw
+            && tok.kind == *while_kw
+        {
+            return self.parse_while_subexpr(tok);
+        }
+
+        if let Some(for_kw) = &self.config.for_kw
+            && tok.kind == *for_kw
+        {
+            return self.parse_for_subexpr(tok);
+        }
+
+        if let Some(lbrace) = &self.config.lbrace
+            && tok.kind == *lbrace
+        {
+            return self.parse_block_subexpr(tok);
+        }
+
+        if let Some(fn_kw) = self.config.function_kw.clone()
+            && tok.kind == fn_kw
+        {
+            return self.parse_function_lambda(tok);
+        }
+
+        if let Some(lk) = self.config.let_kw.clone()
+            && tok.kind == lk
+        {
+            return self.parse_let_subexpr(tok);
+        }
+
         Err(ParseError {
             message: "Expected expression".to_string(),
             line: tok.line,
@@ -654,6 +904,664 @@ impl<'a> PrattState<'a> {
             found: Some(tok.kind.clone()),
             expected: self.expected_prefix_kinds(),
         })
+    }
+
+    // --- Control-flow sub-expression parsers ---
+    // These allow if/while/for/block to appear as operands in binary expressions.
+
+    fn parse_if_subexpr(&mut self, if_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume IF
+
+        let lparen_kind = self.config.lparen.clone();
+        let rparen_kind = self.config.rparen.clone();
+
+        // Consume opening (
+        let open = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '(' after 'if'".to_string(),
+            line: if_tok.line,
+            column: if_tok.column,
+            found: None,
+            expected: vec![lparen_kind.clone()],
+        })?;
+        if open.kind != lparen_kind {
+            return Err(ParseError {
+                message: "Expected '(' after 'if'".to_string(),
+                line: open.line,
+                column: open.column,
+                found: Some(open.kind.clone()),
+                expected: vec![lparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume (
+
+        // Parse condition — stops at ) naturally (RPAREN in stop_tokens)
+        let cond = self.parse_expression_bp(0)?;
+
+        // Consume )
+        let close = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected ')' after if condition".to_string(),
+            line: if_tok.line,
+            column: if_tok.column,
+            found: None,
+            expected: vec![rparen_kind.clone()],
+        })?;
+        if close.kind != rparen_kind {
+            return Err(ParseError {
+                message: "Expected ')' after if condition".to_string(),
+                line: close.line,
+                column: close.column,
+                found: Some(close.kind.clone()),
+                expected: vec![rparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume )
+
+        // Parse then-branch — ELIF/ELSE are in stop_tokens, so it stops naturally
+        let then_expr = self.parse_expression_bp(0)?;
+
+        // Collect elif chains
+        let mut elif_branches: Vec<(CstNode, CstNode)> = Vec::new();
+        loop {
+            let is_elif = self
+                .current()
+                .and_then(|t| self.config.elif_kw.as_deref().map(|k| t.kind == k))
+                .unwrap_or(false);
+            if !is_elif {
+                break;
+            }
+            self.advance(); // consume ELIF
+
+            let elif_open = self.current().cloned().ok_or_else(|| ParseError {
+                message: "Expected '(' after 'elif'".to_string(),
+                line: if_tok.line,
+                column: if_tok.column,
+                found: None,
+                expected: vec![lparen_kind.clone()],
+            })?;
+            if elif_open.kind != lparen_kind {
+                return Err(ParseError {
+                    message: "Expected '(' after 'elif'".to_string(),
+                    line: elif_open.line,
+                    column: elif_open.column,
+                    found: Some(elif_open.kind.clone()),
+                    expected: vec![lparen_kind.clone()],
+                });
+            }
+            self.advance(); // consume (
+
+            let elif_cond = self.parse_expression_bp(0)?;
+
+            let elif_close = self.current().cloned().ok_or_else(|| ParseError {
+                message: "Expected ')' after elif condition".to_string(),
+                line: if_tok.line,
+                column: if_tok.column,
+                found: None,
+                expected: vec![rparen_kind.clone()],
+            })?;
+            if elif_close.kind != rparen_kind {
+                return Err(ParseError {
+                    message: "Expected ')' after elif condition".to_string(),
+                    line: elif_close.line,
+                    column: elif_close.column,
+                    found: Some(elif_close.kind.clone()),
+                    expected: vec![rparen_kind.clone()],
+                });
+            }
+            self.advance(); // consume )
+
+            let elif_body = self.parse_expression_bp(0)?;
+            elif_branches.push((elif_cond, elif_body));
+        }
+
+        // Expect ELSE
+        let else_kw = self.config.else_kw.clone().unwrap_or_else(|| "ELSE".to_string());
+        let else_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected 'else' in if expression".to_string(),
+            line: if_tok.line,
+            column: if_tok.column,
+            found: None,
+            expected: vec![else_kw.clone()],
+        })?;
+        if else_tok.kind != else_kw {
+            return Err(ParseError {
+                message: "Expected 'else' in if expression".to_string(),
+                line: else_tok.line,
+                column: else_tok.column,
+                found: Some(else_tok.kind.clone()),
+                expected: vec![else_kw],
+            });
+        }
+        self.advance(); // consume ELSE
+
+        // Parse else-branch
+        let else_expr = self.parse_expression_bp(0)?;
+
+        // Build ElifList recursively (innermost first)
+        let mut elif_list = CstNode::node("ElifList", vec![]);
+        for (ec, eb) in elif_branches.into_iter().rev() {
+            elif_list = CstNode::node(
+                "ElifList",
+                vec![
+                    CstNode::node("Expr", vec![ec]),
+                    CstNode::node("Expr", vec![eb]),
+                    elif_list,
+                ],
+            );
+        }
+
+        Ok(CstNode::node(
+            "IfExpr",
+            vec![
+                CstNode::node("Expr", vec![cond]),
+                CstNode::node("Expr", vec![then_expr]),
+                elif_list,
+                CstNode::node("Expr", vec![else_expr]),
+            ],
+        ))
+    }
+
+    fn parse_while_subexpr(&mut self, while_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume WHILE
+
+        let lparen_kind = self.config.lparen.clone();
+        let rparen_kind = self.config.rparen.clone();
+
+        let open = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '(' after 'while'".to_string(),
+            line: while_tok.line,
+            column: while_tok.column,
+            found: None,
+            expected: vec![lparen_kind.clone()],
+        })?;
+        if open.kind != lparen_kind {
+            return Err(ParseError {
+                message: "Expected '(' after 'while'".to_string(),
+                line: open.line,
+                column: open.column,
+                found: Some(open.kind.clone()),
+                expected: vec![lparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume (
+
+        let cond = self.parse_expression_bp(0)?;
+
+        let close = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected ')' after while condition".to_string(),
+            line: while_tok.line,
+            column: while_tok.column,
+            found: None,
+            expected: vec![rparen_kind.clone()],
+        })?;
+        if close.kind != rparen_kind {
+            return Err(ParseError {
+                message: "Expected ')' after while condition".to_string(),
+                line: close.line,
+                column: close.column,
+                found: Some(close.kind.clone()),
+                expected: vec![rparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume )
+
+        let body = self.parse_expression_bp(0)?;
+
+        Ok(CstNode::node(
+            "WhileExpr",
+            vec![
+                CstNode::node("Expr", vec![cond]),
+                CstNode::node("Expr", vec![body]),
+            ],
+        ))
+    }
+
+    fn parse_for_subexpr(&mut self, for_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume FOR
+
+        let lparen_kind = self.config.lparen.clone();
+        let rparen_kind = self.config.rparen.clone();
+
+        let open = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '(' after 'for'".to_string(),
+            line: for_tok.line,
+            column: for_tok.column,
+            found: None,
+            expected: vec![lparen_kind.clone()],
+        })?;
+        if open.kind != lparen_kind {
+            return Err(ParseError {
+                message: "Expected '(' after 'for'".to_string(),
+                line: open.line,
+                column: open.column,
+                found: Some(open.kind.clone()),
+                expected: vec![lparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume (
+
+        // IDENT
+        let var_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected variable name in 'for'".to_string(),
+            line: for_tok.line,
+            column: for_tok.column,
+            found: None,
+            expected: vec!["IDENT".to_string()],
+        })?;
+        if var_tok.kind != "IDENT" {
+            return Err(ParseError {
+                message: "Expected variable name in 'for'".to_string(),
+                line: var_tok.line,
+                column: var_tok.column,
+                found: Some(var_tok.kind.clone()),
+                expected: vec!["IDENT".to_string()],
+            });
+        }
+        self.advance(); // consume IDENT
+
+        // IN keyword
+        let in_kw = self.config.in_kw.clone().unwrap_or_else(|| "IN".to_string());
+        let in_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected 'in' in for expression".to_string(),
+            line: for_tok.line,
+            column: for_tok.column,
+            found: None,
+            expected: vec![in_kw.clone()],
+        })?;
+        if in_tok.kind != in_kw {
+            return Err(ParseError {
+                message: "Expected 'in' in for expression".to_string(),
+                line: in_tok.line,
+                column: in_tok.column,
+                found: Some(in_tok.kind.clone()),
+                expected: vec![in_kw],
+            });
+        }
+        self.advance(); // consume IN
+
+        // Parse iterable expression — stops at RPAREN
+        let iter = self.parse_expression_bp(0)?;
+
+        let close = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected ')' after for iterable".to_string(),
+            line: for_tok.line,
+            column: for_tok.column,
+            found: None,
+            expected: vec![rparen_kind.clone()],
+        })?;
+        if close.kind != rparen_kind {
+            return Err(ParseError {
+                message: "Expected ')' after for iterable".to_string(),
+                line: close.line,
+                column: close.column,
+                found: Some(close.kind.clone()),
+                expected: vec![rparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume )
+
+        let body = self.parse_expression_bp(0)?;
+
+        Ok(CstNode::node(
+            "ForExpr",
+            vec![
+                CstNode::token(&var_tok),
+                CstNode::node("Expr", vec![iter]),
+                CstNode::node("Expr", vec![body]),
+            ],
+        ))
+    }
+
+    fn parse_block_subexpr(&mut self, brace_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume {
+
+        let rbrace_kind = self
+            .config
+            .rbrace
+            .clone()
+            .unwrap_or_else(|| "RBRACE".to_string());
+        let semi_kind = self
+            .config
+            .semicolon
+            .clone()
+            .unwrap_or_else(|| "SEMICOLON".to_string());
+
+        // Empty block: {}
+        if let Some(curr) = self.current()
+            && curr.kind == rbrace_kind
+        {
+            self.advance();
+            return Ok(CstNode::node("BlockExpr", vec![]));
+        }
+
+        // Parse first expression
+        let first_expr = self.parse_expression_bp(0)?;
+
+        // Check next token to determine if this is array literal (comma) or block (semicolon/rbrace)
+        if let Some(curr) = self.current() {
+            if let Some(ref ck) = self.config.comma.clone()
+                && curr.kind == *ck
+            {
+                // Array literal: {first, second, ...}
+                self.advance(); // consume comma
+                let mut elements = vec![first_expr];
+
+                loop {
+                    if let Some(c) = self.current()
+                        && c.kind == rbrace_kind
+                    {
+                        break;
+                    }
+                    if self.current().is_none() {
+                        break;
+                    }
+                    let elem = self.parse_expression_bp(0)?;
+                    elements.push(elem);
+
+                    if let Some(c) = self.current()
+                        && let Some(ref ck2) = self.config.comma.clone()
+                        && c.kind == *ck2
+                    {
+                        self.advance(); // consume comma
+                    } else {
+                        break;
+                    }
+                }
+
+                let close = self.current().cloned().ok_or_else(|| ParseError {
+                    message: "Expected '}' to close array literal".to_string(),
+                    line: brace_tok.line,
+                    column: brace_tok.column,
+                    found: None,
+                    expected: vec![rbrace_kind.clone()],
+                })?;
+                if close.kind != rbrace_kind {
+                    return Err(ParseError {
+                        message: "Expected '}' to close array literal".to_string(),
+                        line: close.line,
+                        column: close.column,
+                        found: Some(close.kind.clone()),
+                        expected: vec![rbrace_kind.clone()],
+                    });
+                }
+                self.advance(); // consume }
+                return Ok(CstNode::node("VectorLiteralExpr", elements));
+            }
+        }
+
+        // Block expression: { first; second; ... }
+        let mut stmts = vec![CstNode::node("Expr", vec![first_expr])];
+
+        loop {
+            let Some(curr) = self.current() else { break };
+            if curr.kind == semi_kind {
+                self.advance(); // consume ;
+                // Trailing semicolon or end of block
+                match self.current() {
+                    None => break,
+                    Some(c) if c.kind == rbrace_kind => break,
+                    _ => {}
+                }
+                let stmt = self.parse_expression_bp(0)?;
+                stmts.push(CstNode::node("Expr", vec![stmt]));
+            } else if curr.kind == rbrace_kind {
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let close = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '}' to close block".to_string(),
+            line: brace_tok.line,
+            column: brace_tok.column,
+            found: None,
+            expected: vec![rbrace_kind.clone()],
+        })?;
+        if close.kind != rbrace_kind {
+            return Err(ParseError {
+                message: "Expected '}' to close block".to_string(),
+                line: close.line,
+                column: close.column,
+                found: Some(close.kind.clone()),
+                expected: vec![rbrace_kind.clone()],
+            });
+        }
+        self.advance(); // consume }
+        Ok(CstNode::node("BlockExpr", stmts))
+    }
+
+    fn parse_function_lambda(&mut self, fn_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume FUNCTION
+
+        let open_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '(' after 'function' in lambda".to_string(),
+            line: fn_tok.line,
+            column: fn_tok.column,
+            found: None,
+            expected: vec![self.config.lparen.clone()],
+        })?;
+        if open_tok.kind != self.config.lparen {
+            return Err(ParseError {
+                message: "Expected '(' after 'function' in lambda".to_string(),
+                line: open_tok.line,
+                column: open_tok.column,
+                found: Some(open_tok.kind.clone()),
+                expected: vec![self.config.lparen.clone()],
+            });
+        }
+        self.advance(); // consume (
+
+        let mut param_nodes = Vec::new();
+
+        while let Some(curr) = self.current()
+            && curr.kind != self.config.rparen
+        {
+            let ident_tok = curr.clone();
+            if ident_tok.kind != "IDENT" {
+                return Err(ParseError {
+                    message: "Expected parameter name in function lambda".to_string(),
+                    line: ident_tok.line,
+                    column: ident_tok.column,
+                    found: Some(ident_tok.kind.clone()),
+                    expected: vec!["IDENT".to_string()],
+                });
+            }
+            self.advance();
+
+            let mut param_children = vec![CstNode::token(&ident_tok)];
+            if let Some(curr) = self.current()
+                && curr.kind == "COLON"
+            {
+                self.advance();
+                let type_node = self.parse_type_tokens()?;
+                param_children.push(type_node);
+            }
+            param_nodes.push(CstNode::node("LambdaParam", param_children));
+
+            if let Some(curr) = self.current()
+                && let Some(ref comma) = self.config.comma.clone()
+                && curr.kind == *comma
+            {
+                self.advance();
+            }
+        }
+
+        let close = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected ')' to close function lambda parameters".to_string(),
+            line: fn_tok.line,
+            column: fn_tok.column,
+            found: None,
+            expected: vec![self.config.rparen.clone()],
+        })?;
+        if close.kind != self.config.rparen {
+            return Err(ParseError {
+                message: "Expected ')' to close function lambda parameters".to_string(),
+                line: close.line,
+                column: close.column,
+                found: Some(close.kind.clone()),
+                expected: vec![self.config.rparen.clone()],
+            });
+        }
+        self.advance();
+
+        let mut return_type_node = None;
+        if let Some(curr) = self.current()
+            && curr.kind == "COLON"
+        {
+            self.advance();
+            let type_node = self.parse_type_tokens()?;
+            return_type_node = Some(CstNode::node("LambdaReturnType", vec![type_node]));
+        }
+
+        // consume -> (FUNCARROW)
+        let funcarrow = self
+            .config
+            .funcarrow
+            .clone()
+            .unwrap_or_else(|| "FUNCARROW".to_string());
+        let arrow_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '->' after function lambda parameters".to_string(),
+            line: fn_tok.line,
+            column: fn_tok.column,
+            found: None,
+            expected: vec![funcarrow.clone()],
+        })?;
+        if arrow_tok.kind != funcarrow {
+            return Err(ParseError {
+                message: "Expected '->' after function lambda parameters".to_string(),
+                line: arrow_tok.line,
+                column: arrow_tok.column,
+                found: Some(arrow_tok.kind.clone()),
+                expected: vec![funcarrow],
+            });
+        }
+        self.advance();
+
+        let body = self.parse_expression_bp(0)?;
+
+        let mut children = param_nodes;
+        if let Some(ret) = return_type_node {
+            children.push(ret);
+        }
+        children.push(body);
+        Ok(CstNode::node("LambdaExpr", children))
+    }
+
+    fn parse_let_subexpr(&mut self, let_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume LET
+
+        let in_kw = self
+            .config
+            .in_kw
+            .clone()
+            .unwrap_or_else(|| "IN".to_string());
+
+        let first_binding = self.parse_one_let_binding()?;
+
+        let mut more_bindings = Vec::new();
+        while let Some(curr) = self.current()
+            && let Some(ref ck) = self.config.comma.clone()
+            && curr.kind == *ck
+        {
+            self.advance(); // consume comma
+            more_bindings.push(self.parse_one_let_binding()?);
+        }
+
+        let in_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected 'in' in let expression".to_string(),
+            line: let_tok.line,
+            column: let_tok.column,
+            found: None,
+            expected: vec![in_kw.clone()],
+        })?;
+        if in_tok.kind != in_kw {
+            return Err(ParseError {
+                message: "Expected 'in' in let expression".to_string(),
+                line: in_tok.line,
+                column: in_tok.column,
+                found: Some(in_tok.kind.clone()),
+                expected: vec![in_kw],
+            });
+        }
+        self.advance(); // consume IN
+
+        let body = self.parse_expression_bp(0)?;
+
+        // Build LetBindingTail chain (reversed so first extra binding is outermost)
+        let mut tail = CstNode::node("LetBindingTail", vec![]);
+        for b in more_bindings.into_iter().rev() {
+            tail = CstNode::node("LetBindingTail", vec![b, tail]);
+        }
+
+        Ok(CstNode::node(
+            "LetExpr",
+            vec![first_binding, tail, CstNode::node("Expr", vec![body])],
+        ))
+    }
+
+    fn parse_one_let_binding(&mut self) -> Result<CstNode, ParseError> {
+        let ident_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected identifier in let binding".to_string(),
+            line: 1,
+            column: 1,
+            found: None,
+            expected: vec!["IDENT".to_string()],
+        })?;
+        if !self.is_identifier_kind(&ident_tok.kind) {
+            return Err(ParseError {
+                message: "Expected identifier in let binding".to_string(),
+                line: ident_tok.line,
+                column: ident_tok.column,
+                found: Some(ident_tok.kind.clone()),
+                expected: vec!["IDENT".to_string()],
+            });
+        }
+        self.advance();
+        // Normalize contextual keywords to IDENT so the frontend builder finds them.
+        let ident_tok = if ident_tok.kind != "IDENT" {
+            ParseToken::new("IDENT", &ident_tok.lexeme, ident_tok.line, ident_tok.column)
+        } else {
+            ident_tok
+        };
+
+        let type_ann = if let Some(curr) = self.current()
+            && curr.kind == "COLON"
+        {
+            self.advance();
+            let type_node = self.parse_type_tokens()?;
+            Some(CstNode::node("TypeAnnotation", vec![type_node]))
+        } else {
+            None
+        };
+
+        // consume =
+        let eq_tok = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '=' in let binding".to_string(),
+            line: ident_tok.line,
+            column: ident_tok.column,
+            found: None,
+            expected: vec!["EQUAL".to_string()],
+        })?;
+        if eq_tok.kind != "EQUAL" {
+            return Err(ParseError {
+                message: "Expected '=' in let binding".to_string(),
+                line: eq_tok.line,
+                column: eq_tok.column,
+                found: Some(eq_tok.kind.clone()),
+                expected: vec!["EQUAL".to_string()],
+            });
+        }
+        self.advance();
+
+        // Value expression stops at stop_tokens (which includes IN and COMMA)
+        let val_expr = self.parse_expression_bp(0)?;
+
+        let mut children = vec![CstNode::token(&ident_tok)];
+        if let Some(ann) = type_ann {
+            children.push(ann);
+        }
+        children.push(CstNode::node("Expr", vec![val_expr]));
+        Ok(CstNode::node("LetBinding", children))
     }
 
     // --- Vector parsing ---
@@ -1150,22 +2058,39 @@ impl<'a> PrattState<'a> {
         }
         self.advance();
 
-        // Check for [] suffix → vector
+        // Check for [] suffix → vector (supports multiple [] for 2D+ arrays)
         if let Some(lb) = self.config.lbracket.clone() {
+            let rb = self
+                .config
+                .rbracket
+                .clone()
+                .unwrap_or_else(|| "RBRACKET".to_string());
             if let Some(curr) = self.current()
                 && curr.kind == lb
             {
-                let rb = self
-                    .config
-                    .rbracket
-                    .clone()
-                    .unwrap_or_else(|| "RBRACKET".to_string());
                 self.advance(); // consume [
                 if let Some(curr) = self.current()
                     && curr.kind == rb
                 {
                     self.advance(); // consume ]
-                    return Ok(CstNode::node("TypeVector", vec![CstNode::token(&tok)]));
+                    let mut node = CstNode::node("TypeVector", vec![CstNode::token(&tok)]);
+                    // Keep wrapping for additional [] dimensions (e.g. Number[][])
+                    loop {
+                        match self.current() {
+                            Some(c) if c.kind == lb => {
+                                self.advance(); // consume [
+                                match self.current() {
+                                    Some(c2) if c2.kind == rb => {
+                                        self.advance(); // consume ]
+                                        node = CstNode::node("TypeVector", vec![node]);
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            _ => break,
+                        }
+                    }
+                    return Ok(node);
                 }
             }
         }
@@ -1210,6 +2135,20 @@ impl<'a> PrattState<'a> {
 
     fn advance(&mut self) {
         self.pos += 1;
+    }
+
+    /// Returns true if `kind` is usable as an identifier in binding positions.
+    /// `base`, `self`, and similar contextual keywords can appear as variable names.
+    fn is_identifier_kind(&self, kind: &str) -> bool {
+        if kind == "IDENT" {
+            return true;
+        }
+        if let Some(base_kw) = &self.config.base_kw {
+            if kind == base_kw {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -1322,6 +2261,17 @@ mod tests {
             rbracket: None,
             arrow: None,
             funcarrow: None,
+            if_kw: None,
+            elif_kw: None,
+            else_kw: None,
+            while_kw: None,
+            for_kw: None,
+            in_kw: None,
+            lbrace: None,
+            rbrace: None,
+            semicolon: None,
+            function_kw: None,
+            let_kw: None,
         })
     }
 

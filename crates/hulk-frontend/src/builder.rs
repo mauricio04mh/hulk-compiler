@@ -1,6 +1,7 @@
 use crate::ast::{
-    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, LetBinding, MethodDecl, Param, Program,
-    ProtocolDecl, ProtocolMethod, Span, TypeDecl, TypeMember, TypeParent, TypeRef, UnaryOp,
+    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, LetBinding, MethodDecl, NewVectorInit,
+    Param, Program, ProtocolDecl, ProtocolMethod, Span, TypeDecl, TypeMember, TypeParent, TypeRef,
+    UnaryOp,
 };
 use crate::error::AstError;
 use hulk_parsegen::runtime::cst::CstNode;
@@ -103,6 +104,7 @@ impl AstBuilder {
 
     fn build_function_decl(cst: &CstNode) -> Result<FunctionDecl, AstError> {
         let (_, children) = as_node(cst)?;
+        let is_macro = children.iter().any(|n| token_if_kind(n, "DEFINE").is_some());
 
         let (name_str, name_span) = children
             .iter()
@@ -147,6 +149,7 @@ impl AstBuilder {
             params,
             return_type,
             body,
+            is_macro,
         })
     }
 
@@ -396,7 +399,9 @@ impl AstBuilder {
 
         let name = children
             .iter()
-            .find_map(|node| token_if_kind(node, "IDENT"))
+            .find_map(|node| {
+                token_if_kind(node, "IDENT").or_else(|| token_if_kind(node, "BASE"))
+            })
             .ok_or_else(|| AstError::MissingChild {
                 node: "TypeMember".to_string(),
                 location: AstError::no_location(),
@@ -543,18 +548,51 @@ impl AstBuilder {
         if children.is_empty() {
             return Ok(None);
         }
-        // New grammar: TypeAnnotation -> COLON TypeExpr
+        // Grammar path: TypeAnnotation -> COLON TypeExpr
         if let Some(type_expr_node) = children
             .iter()
             .find(|n| matches!(as_node_name(n), Some("TypeExpr")))
         {
             return Ok(Some(Self::build_typeref_from_typeexpr(type_expr_node)?));
         }
-        // Legacy grammar (hulk_functions/control): TypeAnnotation -> COLON IDENT
+        // Pratt path: inline type nodes (TypeVector, TypeIterable, TypeFunctor)
+        for child in children {
+            if matches!(
+                as_node_name(child),
+                Some("TypeVector") | Some("TypeIterable") | Some("TypeFunctor")
+            ) {
+                return Ok(Some(Self::build_typeref_from_pratt_node(child)?));
+            }
+        }
+        // Legacy grammar or Pratt IDENT token
         if let Some(name) = children.iter().find_map(|n| token_if_kind(n, "IDENT")) {
             return Ok(Some(TypeRef::Simple(name.to_string())));
         }
         Ok(None)
+    }
+
+    /// Apply a (possibly recursive) `TypeExprSuffix` to a base TypeRef.
+    /// TypeExprSuffix -> STAR | LBRACKET RBRACKET TypeExprSuffix | epsilon
+    fn apply_type_suffix(base: TypeRef, suffix: &CstNode) -> Result<TypeRef, AstError> {
+        let (_, suffix_children) = as_node(suffix)?;
+        if suffix_children.is_empty() {
+            return Ok(base);
+        }
+        match suffix_children.first().and_then(as_token_kind) {
+            Some("STAR") => Ok(TypeRef::Iterable(Box::new(base))),
+            Some("LBRACKET") => {
+                let wrapped = TypeRef::Vector(Box::new(base));
+                if let Some(nested) = suffix_children
+                    .iter()
+                    .find(|n| matches!(as_node_name(n), Some("TypeExprSuffix")))
+                {
+                    Self::apply_type_suffix(wrapped, nested)
+                } else {
+                    Ok(wrapped)
+                }
+            }
+            _ => Ok(base),
+        }
     }
 
     /// Build a TypeRef from a `TypeExpr` grammar node.
@@ -568,17 +606,7 @@ impl AstBuilder {
                 .iter()
                 .find(|n| matches!(as_node_name(n), Some("TypeExprSuffix")))
             {
-                let (_, suffix_children) = as_node(suffix)?;
-                if suffix_children.is_empty() {
-                    return Ok(base);
-                }
-                if let Some(first) = suffix_children.first() {
-                    match as_token_kind(first) {
-                        Some("STAR") => return Ok(TypeRef::Iterable(Box::new(base))),
-                        Some("LBRACKET") => return Ok(TypeRef::Vector(Box::new(base))),
-                        _ => return Ok(base),
-                    }
-                }
+                return Self::apply_type_suffix(base, suffix);
             }
             return Ok(base);
         }
@@ -666,15 +694,12 @@ impl AstBuilder {
             }
             CstNode::Node { name, children } => match name.as_str() {
                 "TypeVector" => {
-                    let inner = children
-                        .iter()
-                        .find_map(|n| token_if_kind(n, "IDENT"))
-                        .ok_or_else(|| AstError::MissingChild {
-                            node: "TypeVector".to_string(),
-                            location: AstError::no_location(),
-                        })?
-                        .to_string();
-                    Ok(TypeRef::Vector(Box::new(TypeRef::Simple(inner))))
+                    let inner_child = children.first().ok_or_else(|| AstError::MissingChild {
+                        node: "TypeVector".to_string(),
+                        location: AstError::no_location(),
+                    })?;
+                    let inner_ty = Self::build_typeref_from_pratt_node(inner_child)?;
+                    Ok(TypeRef::Vector(Box::new(inner_ty)))
                 }
                 "TypeIterable" => {
                     let inner = children
@@ -790,6 +815,7 @@ impl AstBuilder {
                 "VectorLiteralExpr" => Self::build_vector_literal_expr(cst),
                 "VectorGeneratorExpr" => Self::build_vector_generator_expr(cst),
                 "VectorIndexExpr" => Self::build_vector_index_expr(cst),
+                "NewArrayExpr" => Self::build_new_array_expr(cst),
                 "LambdaExpr" => Self::build_lambda_expr(cst),
                 "GroupExpr" => {
                     let child = children.first().ok_or_else(|| AstError::MissingChild {
@@ -950,6 +976,57 @@ impl AstBuilder {
             elements.push(Self::build_expr(child)?);
         }
         Ok(Expr::VectorLiteral(elements))
+    }
+
+    fn build_new_array_expr(cst: &CstNode) -> Result<Expr, AstError> {
+        let span = first_token_span(cst);
+        let (_, children) = as_node(cst)?;
+
+        // children[0] = IDENT or TypeVector (element type)
+        // children[1] = size expr
+        // children[2] = IDENT (init var) -- optional
+        // children[3] = Expr (init body) -- optional
+
+        let elem_type_node = children.first().ok_or_else(|| AstError::MissingChild {
+            node: "NewArrayExpr".to_string(),
+            location: AstError::no_location(),
+        })?;
+        let elem_type = if let Some(ident) = token_if_kind(elem_type_node, "IDENT") {
+            TypeRef::Simple(ident.to_string())
+        } else {
+            Self::build_typeref_from_pratt_node(elem_type_node)?
+        };
+
+        let size_node = children.get(1).ok_or_else(|| AstError::MissingChild {
+            node: "NewArrayExpr".to_string(),
+            location: AstError::no_location(),
+        })?;
+        let size = Self::build_expr(size_node)?;
+
+        let init = if let (Some(var_node), Some(body_node)) =
+            (children.get(2), children.get(3))
+        {
+            let var = token_if_kind(var_node, "IDENT")
+                .ok_or_else(|| AstError::MissingChild {
+                    node: "NewArrayExpr init var".to_string(),
+                    location: AstError::no_location(),
+                })?
+                .to_string();
+            let body = Self::build_expr(body_node)?;
+            Some(NewVectorInit {
+                var,
+                body: Box::new(body),
+            })
+        } else {
+            None
+        };
+
+        Ok(Expr::NewVector {
+            span,
+            elem_type,
+            size: Box::new(size),
+            init,
+        })
     }
 
     fn build_vector_generator_expr(cst: &CstNode) -> Result<Expr, AstError> {
@@ -1190,15 +1267,24 @@ impl AstBuilder {
 
     fn build_block_expr(cst: &CstNode) -> Result<Expr, AstError> {
         let (_, children) = as_node(cst)?;
-        let Some(expr_list_node) = children
+
+        // Grammar path: has ExprList child
+        if let Some(expr_list_node) = children
             .iter()
             .find(|node| matches!(as_node_name(node), Some("ExprList")))
-        else {
-            return Ok(Expr::Block(Vec::new()));
-        };
+        {
+            let mut exprs = Vec::new();
+            Self::collect_expr_list(expr_list_node, &mut exprs)?;
+            return Ok(Expr::Block(exprs));
+        }
 
+        // Pratt path: direct Expr children
         let mut exprs = Vec::new();
-        Self::collect_expr_list(expr_list_node, &mut exprs)?;
+        for child in children {
+            if matches!(as_node_name(child), Some("Expr")) {
+                exprs.push(Self::build_expr(child)?);
+            }
+        }
         Ok(Expr::Block(exprs))
     }
 
@@ -1383,7 +1469,9 @@ impl AstBuilder {
 
         let ident = children
             .iter()
-            .find_map(|node| token_if_kind(node, "IDENT"))
+            .find_map(|node| {
+                token_if_kind(node, "IDENT").or_else(|| token_if_kind(node, "BASE"))
+            })
             .ok_or_else(|| AstError::MissingChild {
                 node: "LetBinding".to_string(),
                 location: AstError::no_location(),

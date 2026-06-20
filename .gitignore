@@ -1,6 +1,16 @@
 # Rust build output
 /target/
 
+# Claude Code internal data (agent worktrees, session logs)
+.claude/
+
+# Grading test suite (provided by the evaluator, not project source)
+/tests/
+
+# Compiled binaries
+/hulk
+/output
+
 # Environment files
 .env
 

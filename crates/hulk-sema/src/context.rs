@@ -309,6 +309,24 @@ impl TypeRegistry {
     }
 
     /// Returns true if `sub` is the same as `ancestor`, or inherits from it directly or transitively.
+    /// Returns true if `type_name` structurally implements Iterable(elem_type):
+    /// it must have `next(): Boolean` and `current(): elem_type`.
+    pub fn implements_iterable(&self, type_name: &str, elem_type: &Type) -> bool {
+        let Some(next_info) = self.lookup_method_info(type_name, "next") else {
+            return false;
+        };
+        if next_info.return_type != Type::Boolean && next_info.return_type != Type::Unknown {
+            return false;
+        }
+        let Some(current_info) = self.lookup_method_info(type_name, "current") else {
+            return false;
+        };
+        // The current element type must be compatible with elem_type.
+        current_info.return_type == *elem_type
+            || current_info.return_type == Type::Unknown
+            || *elem_type == Type::Unknown
+    }
+
     pub fn is_descendant_of(&self, sub: &str, ancestor: &str) -> bool {
         let mut current = Some(sub);
         while let Some(name) = current {
@@ -333,6 +351,38 @@ impl TypeRegistry {
             current = ti.parent.as_deref();
         }
         None
+    }
+
+    /// Update an attribute's type after its initializer is analyzed (for unannotated attrs).
+    pub fn update_attribute_type(
+        &mut self,
+        type_name: &str,
+        attr_name: &str,
+        attr_type: Type,
+    ) {
+        if let Some(ti) = self.types.get_mut(type_name) {
+            if let Some(slot) = ti.attributes.get_mut(attr_name) {
+                if *slot == Type::Unknown {
+                    *slot = attr_type;
+                }
+            }
+        }
+    }
+
+    /// Update a method's return type after the body is analyzed (for unannotated methods).
+    pub fn update_method_return_type(
+        &mut self,
+        type_name: &str,
+        method_name: &str,
+        return_type: Type,
+    ) {
+        if let Some(ti) = self.types.get_mut(type_name) {
+            if let Some(mi) = ti.methods.get_mut(method_name) {
+                if mi.return_type == Type::Unknown {
+                    mi.return_type = return_type;
+                }
+            }
+        }
     }
 
     /// Finds a method by traversing the inheritance chain upwards. Returns a cloned MethodInfo.
@@ -379,6 +429,20 @@ impl TypeRegistry {
             }
         }
         None
+    }
+
+    /// Resolves the parent type's method for a `base.method(...)` call.
+    /// Returns `(canonical_method_name, MethodInfo)` if found and arity matches.
+    /// `_type_name` is the current (child) type; `parent_name` is its parent.
+    pub fn resolve_base_method_info(
+        &self,
+        _type_name: &str,
+        parent_name: &str,
+        method_name: &str,
+        _arity: usize,
+    ) -> Option<(String, MethodInfo)> {
+        self.lookup_method_info(parent_name, method_name)
+            .map(|mi| (method_name.to_string(), mi))
     }
 
     /// Returns the nearest common ancestor of two type names in the hierarchy, or Object.

@@ -87,6 +87,41 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         source: "{ print(\"Hello\"); print(\"A B\"); }",
         expected_stdout: "Hello\nA B\n",
     },
+    SupportedCase {
+        name: "string concat literals",
+        source: "{ print(\"Hello\" @ \"World\"); }",
+        expected_stdout: "HelloWorld\n",
+    },
+    SupportedCase {
+        name: "string concat space",
+        source: "{ print(\"Hello\" @@ \"World\"); }",
+        expected_stdout: "Hello World\n",
+    },
+    SupportedCase {
+        name: "string concat number",
+        source: "{ print(\"x = \" @ 42); }",
+        expected_stdout: "x = 42\n",
+    },
+    SupportedCase {
+        name: "string concat numeric expression",
+        source: "{ print(\"sum = \" @ (1 + 2)); }",
+        expected_stdout: "sum = 3\n",
+    },
+    SupportedCase {
+        name: "string concat bool",
+        source: "{ print(\"ok = \" @ true); print(\"ok = \" @ false); }",
+        expected_stdout: "ok = true\nok = false\n",
+    },
+    SupportedCase {
+        name: "string concat assigned variable",
+        source: "let s: String = \"Hello\" @@ \"World\" in print(s);",
+        expected_stdout: "Hello World\n",
+    },
+    SupportedCase {
+        name: "chained string concat",
+        source: "{ print(\"a\" @ \"b\" @ \"c\"); }",
+        expected_stdout: "abc\n",
+    },
 ];
 
 fn lower_ir_from_source(source: &str) -> Result<IrProgram, Box<dyn Error>> {
@@ -120,6 +155,8 @@ fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
         fs::write(&llvm_path, llvm).map_err(|err| format!("failed to write LLVM IR: {err}"))?;
 
         let compile = Command::new("clang")
+            .arg("-mllvm")
+            .arg("-opaque-pointers")
             .arg(&llvm_path)
             .arg(&runtime_path)
             .arg("-lm")
@@ -247,21 +284,4 @@ fn supported_minimal_programs_execute_with_clang_when_available() {
 fn unsupported_vector_fails_cleanly() {
     let err = codegen_error_from_source("let v = [1, 2, 3] in print(v[0]);");
     assert_unsupported_error(err, &["unsupported", "newvector", "vector"]);
-}
-
-#[test]
-fn unsupported_object_fails_cleanly() {
-    let err = codegen_error_from_source(
-        "type Point {\n    x: Number = 10;\n    getX(): Number => self.x;\n}\n\nlet p = new Point() in print(p.getX());",
-    );
-    assert_unsupported_error(
-        err,
-        &[
-            "unsupported",
-            "allocate",
-            "staticcall",
-            "virtualcall",
-            "getattr",
-        ],
-    );
 }
