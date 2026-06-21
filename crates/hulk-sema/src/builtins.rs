@@ -49,6 +49,36 @@ pub fn builtin_functions() -> Vec<BuiltinSignature> {
             params: vec![Type::Number, Type::Number],
             return_type: Type::Iterable(Box::new(Type::Number)),
         },
+        BuiltinSignature {
+            name: "abs",
+            params: vec![Type::Number],
+            return_type: Type::Number,
+        },
+        BuiltinSignature {
+            name: "floor",
+            params: vec![Type::Number],
+            return_type: Type::Number,
+        },
+        BuiltinSignature {
+            name: "ceil",
+            params: vec![Type::Number],
+            return_type: Type::Number,
+        },
+        BuiltinSignature {
+            name: "round",
+            params: vec![Type::Number],
+            return_type: Type::Number,
+        },
+        BuiltinSignature {
+            name: "min",
+            params: vec![Type::Number, Type::Number],
+            return_type: Type::Number,
+        },
+        BuiltinSignature {
+            name: "max",
+            params: vec![Type::Number, Type::Number],
+            return_type: Type::Number,
+        },
     ]
 }
 

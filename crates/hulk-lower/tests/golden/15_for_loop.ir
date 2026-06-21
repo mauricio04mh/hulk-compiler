@@ -22,7 +22,7 @@ function entry #0 -> Number {
   %t2 = vcall %l0.Vector::next#0(%l0)
   branch %t2 ? L1 : L2
   label L1
-  %t3 = vcall %l0.Vector::current#0(%l0)
+  %t3 = vcall %l0.Vector::current#1(%l0)
   %l1 = %t3
   %t4 = %l1 + 1
   %t1 = %t4

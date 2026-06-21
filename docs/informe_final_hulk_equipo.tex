@@ -1,0 +1,1633 @@
+\documentclass[12pt,letterpaper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage[activate=false]{microtype}
+\usepackage{float}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\definecolor{codegray}{gray}{0.96}
+\definecolor{keywordblue}{rgb}{0.05,0.19,0.45}
+\definecolor{commentgreen}{rgb}{0.0,0.4,0.0}
+
+\lstdefinelanguage{HULK}{
+    keywords={function,define,type,inherits,new,self,base,let,in,true,false,if,elif,else,while,for,is,as,protocol,interface,extends,print,match},
+    sensitive=true,
+    comment=[l]{//},
+    string=[b]"
+}
+
+\lstdefinelanguage{IR}{
+    keywords={type,attr,method,data,function,entry,param,local,temp,label,jump,branch,return,call,static_call,vcall,base_call,allocate,getattr,setattr,vector,vector_get,vector_push,vector_set,vector_len,closure,closure_call,get_capture,type_test,type_cast,inherits},
+    sensitive=true,
+    comment=[l]{\#},
+    string=[b]"
+}
+
+\lstdefinelanguage{Rust}{
+    keywords={pub,fn,struct,enum,impl,let,mut,match,if,else,for,while,return,use,mod,type,trait,where,self,Self,true,false,Some,None,Ok,Err,Vec,HashMap,Box,String},
+    sensitive=true,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    string=[b]"
+}
+
+\lstdefinelanguage{C}{
+    keywords={typedef,struct,int,void,double,char,int64_t,int8_t,uint8_t,size_t,return,if,else,while,for},
+    sensitive=true,
+    comment=[l]{//},
+    morecomment=[s]{/*}{*/},
+    string=[b]"
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\bfseries\color{keywordblue},
+    commentstyle=\itshape\color{commentgreen},
+    backgroundcolor=\color{codegray},
+    breaklines=true,
+    frame=single,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1 {ñ}{{\~n}}1 {Ñ}{{\~N}}1
+}
+
+\newcommand{\repo}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\estado}[1]{\textbf{#1}}
+\newcommand{\hulk}{\textsc{HULK}}
+\newcommand{\irname}{Hulk IR}
+\newcommand{\src}[1]{\texttt{#1}}
+
+\title{Informe Final del Compilador de \hulk{}\\
+\large Frontend, análisis semántico, representación intermedia, backend LLVM y runtime}
+
+\author{
+Camilo Pérez Fleita\\
+Guillermo Hugues Cardona\\
+Mauricio Medina Hernández\\[0.5em]
+\textit{Proyecto de Compilación / Lenguajes de Programación}
+}
+
+\date{20 de junio de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este informe documenta el diseño, la implementación y el estado alcanzado por nuestro compilador de \hulk{}, desarrollado en el repositorio \repo{mauricio04mh/hulk-compiler}. El compilador está organizado en ocho crates Rust: generadores propios de lexer y parser, un frontend que produce AST, una fase semántica con inferencia iterativa e HIR tipada, un lowering a representación intermedia propia (Hulk IR), un backend de emisión de LLVM IR, y un runtime en C. El documento explica con detalle las estructuras de datos centrales de cada módulo, las decisiones de arquitectura tomadas por el equipo, el modelo de tipos en la IR, la organización de objetos y vtables en el runtime, y la integración del driver con \src{clang}. También se cubren las extensiones implementadas: protocolos estructurales, arreglos y vectores, lambdas y closures.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Introducción}
+
+Construir un compilador para \hulk{} requiere preservar el significado del programa a través de múltiples capas de representación. El objetivo fue construir un pipeline defendible, inspeccionable y probado por capas: desde el reconocimiento léxico hasta la generación de LLVM IR enlazable con un runtime en C.
+
+La arquitectura adoptada es estrictamente por fases. El frontend reconoce tokens y estructura sintáctica; el AST elimina detalles de la gramática concreta; la fase semántica resuelve nombres, scopes, tipos, atributos, métodos, \src{self}, \src{base} y builtins; la HIR conserva la estructura de alto nivel ya tipada; el lowering transforma esa HIR en una representación intermedia propia (Hulk IR); y el backend emite LLVM IR enlazable con el runtime.
+
+Este informe distingue tres niveles de soporte:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{Soporte sintáctico:} la construcción se reconoce y se representa en AST.
+    \item \textbf{Soporte semántico e intermedio:} la construcción se valida y se baja a HIR/IR.
+    \item \textbf{Soporte ejecutable:} el backend LLVM y el runtime permiten producir un binario funcional.
+\end{enumerate}
+
+% ============================================================
+\section{Objetivos y alcance}
+
+\subsection{Objetivo general}
+
+Implementar un compilador modular para \hulk{} capaz de leer programas fuente, analizarlos semánticamente, traducirlos a una representación intermedia propia y generar LLVM IR enlazable con un runtime en C.
+
+\subsection{Objetivos específicos}
+
+\begin{enumerate}[label=\arabic*.]
+    \item Implementar un frontend reutilizable a partir de especificaciones léxicas y gramaticales declarativas.
+    \item Construir un AST expresivo para declaraciones, expresiones, tipos, protocolos, funciones, métodos, vectores, lambdas y operaciones de objeto.
+    \item Resolver nombres y scopes, incluyendo variables locales, parámetros, builtins, funciones globales, atributos, métodos, \src{self} y \src{base}.
+    \item Implementar chequeo e inferencia de tipos sobre primitivos, tipos de usuario, protocolos, vectores, iterables y functors.
+    \item Producir una HIR tipada como contrato entre semántica y lowering.
+    \item Diseñar una IR propia de tres direcciones, con secciones de tipos, datos y código.
+    \item Emitir LLVM IR para el subconjunto ejecutable y delegar operaciones complejas al runtime.
+    \item Ofrecer una interfaz de línea de comandos para compilar y depurar cada fase.
+\end{enumerate}
+
+\subsection{Resumen de estado}
+
+{\small\begin{longtable}{p{3.0cm}p{3.2cm}p{2.8cm}p{5.0cm}}
+\toprule
+\textbf{Requisito} & \textbf{Evidencia} & \textbf{Estado} & \textbf{Comentario técnico} \\
+\midrule
+Lenguaje de implementación & Workspace Rust + runtime C & \estado{Cumplido} & Compilador en Rust; soporte de ejecución en C. \\
+Frontend & \src{hulk-lexgen}, \src{hulk-parsegen}, \src{hulk-frontend} & \estado{Cumplido} & Lexer, parser LL(1), Pratt parser y AST builder. \\
+Semántica & \src{hulk-sema} & \estado{Cumplido amplio} & TypeRegistry, scopes, HIR tipada, inferencia iterativa. \\
+IR propia & \src{hulk-ir}, \src{hulk-lower} & \estado{Cumplido} & IR con secciones \src{.TYPES}, \src{.DATA}, \src{.CODE}. \\
+Backend LLVM & \src{hulk-codegen-llvm} & \estado{Funcional completo} & Emite LLVM IR; ABI completo con el runtime; guards de división/módulo por cero. \\
+Runtime & \src{runtime/hulk\_runtime.c} & \estado{Funcional con safety} & Strings, objetos, vtables, vectores, rangos, closures; arena 64\,MB; comprobaciones de bounds, nulos y vtable. \\
+CLI & \src{hulk-driver} & \estado{Cumplido} & Compila a \src{./output}; flags para depurar por fase. \\
+CI & GitHub Actions & \estado{Cumplido} & \src{cargo test --workspace} pasa en CI. \\
+\bottomrule
+\end{longtable}}
+
+% ============================================================
+\section{Arquitectura del repositorio}
+
+\subsection{Workspace Rust}
+
+La raíz del proyecto define un workspace con ocho crates principales más una carpeta de runtime en C. Esta división evita un compilador monolítico y permite probar cada fase de forma independiente.
+
+\begin{longtable}{p{4.0cm}p{10.3cm}}
+\toprule
+\textbf{Crate} & \textbf{Responsabilidad} \\
+\midrule
+\src{hulk-lexgen} & Generación de lexer a partir de especificaciones \src{LexerSpec}. \\
+\src{hulk-parsegen} & Generación de parser, cálculo FIRST/FOLLOW, tabla LL(1) y Pratt parser. \\
+\src{hulk-frontend} & API pública de parseo, pipeline cacheado y construcción de AST. \\
+\src{hulk-sema} & Resolución de nombres, TypeRegistry, chequeo e inferencia semántica, HIR tipada. \\
+\src{hulk-ir} & Modelo de IR: tipos, datos, funciones, instrucciones, valores e impresión textual. \\
+\src{hulk-lower} & Traducción de \src{SemanticProgram/HIR} a \src{IrProgram}. \\
+\src{hulk-codegen-llvm} & Emisión textual de LLVM IR y ABI de llamadas al runtime. \\
+\src{hulk-driver} & Binario \src{hulkc}: integra todas las fases y llama a \src{clang}. \\
+\src{runtime/} & Biblioteca C con objetos, vtables, vectores, rangos y closures. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Pipeline de compilación}
+
+\begin{lstlisting}[language=IR,caption={Pipeline completo del compilador}]
+archivo .hulk
+  -> hulk-lexgen (LexerSpec -> tokens)
+  -> hulk-parsegen (LL(1) + PrattParser -> CstNode)
+  -> hulk-frontend (AstBuilder -> Program)
+  -> hulk-sema (analyze_program -> SemanticProgram + TypeRegistry + HIR)
+  -> hulk-lower (lower_program -> IrProgram)
+  -> hulk-codegen-llvm (emit_llvm -> LLVM IR textual)
+  -> clang output.ll runtime/hulk_runtime.c -lm
+  -> ejecutable ./output
+\end{lstlisting}
+
+El driver (\src{hulk-driver/src/main.rs}) orquesta todo el pipeline. Sin flags, ejecuta cada fase hasta producir \src{./output}. Con flags como \src{--ast}, \src{--hir}, \src{--ir} o \src{--emit-llvm}, detiene el pipeline en la fase solicitada e imprime la representación intermedia. Esta separación es central para la depuración: el compilador no es una caja negra.
+
+\subsection{Ventajas y costos de la separación por fases}
+
+La arquitectura tiene tres ventajas concretas:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{Contratos claros.} El lowering consume HIR tipada (\src{SemanticProgram}) y no repite validaciones de alto nivel. El backend LLVM consume \src{IrProgram} sin conocer la semántica.
+    \item \textbf{Pruebas por capa.} Cada crate tiene sus propias pruebas Rust. El crate \src{hulk-codegen-llvm} incluye pruebas de integración que compilan con \src{clang} y verifican la salida estándar.
+    \item \textbf{Crecimiento incremental.} Una nueva construcción puede entrar primero en AST/HIR/IR antes de que el backend la soporte completamente.
+\end{enumerate}
+
+El costo es la necesidad de mantener representaciones sincronizadas. Agregar arreglos, por ejemplo, requirió cambios en lexer, parser, AST, semántica, IR, lowering, backend y runtime.
+
+% ============================================================
+\section{Frontend léxico y sintáctico}
+
+\subsection{Crate \src{hulk-lexgen}: especificación declarativa de lexer}
+
+El lexer de \hulk{} no se codifica manualmente. En su lugar, se define una estructura \src{LexerSpec} (en \src{hulk-lexgen/src/spec/lexer\_spec.rs}) que el crate convierte en un lexer funcional:
+
+\begin{lstlisting}[language=Rust,caption={Estructura central de especificación léxica}]
+pub struct LexerSpec {
+    pub exact_rules: Vec<ExactRule>,   // palabras clave y operadores fijos
+    pub identifier: Option<IdentifierRule>,
+    pub number: Option<NumberRule>,
+    pub string: Option<StringRule>,
+    pub skip_whitespace: bool,
+    pub line_comment: Option<LineCommentRule>,
+}
+\end{lstlisting}
+
+Cada tipo de regla captura solo los atributos necesarios. \src{ExactRule} registra el texto exacto, el nombre del token, si es palabra clave y la prioridad. \src{NumberRule} indica si se aceptan enteros, flotantes o ambos. \src{StringRule} configura el delimitador y las secuencias de escape habilitadas. \src{LineCommentRule} especifica el prefijo del comentario.
+
+Esta decisión de diseño tiene una consecuencia importante: el lexer es reutilizable para cualquier lenguaje con una especificación similar. Para \hulk{} en particular, la especificación registra palabras clave como \src{function}, \src{define}, \src{type}, \src{inherits}, \src{new}, \src{self}, \src{base}, \src{let}, \src{in}, \src{while}, \src{for}, \src{protocol}, \src{interface}, \src{extends}; operadores compuestos como \src{@@}, \src{@}, \src{==}, \src{!=}, \src{<=}, \src{:=}, \src{=>}, \src{->}; y construcciones de literales para números, strings e identificadores.
+
+Las posiciones léxicas (línea y columna) se conservan en cada token, lo que permite que el pipeline emita mensajes de error ubicados.
+
+\subsection{Crate \src{hulk-parsegen}: parser LL(1) y Pratt parser}
+
+El crate \src{hulk-parsegen} combina dos estrategias de parseo. El parser LL(1) se genera a partir de una especificación de gramática y usa una tabla \mbox{FIRST/FOLLOW} para decidir qué producción expandir. Este parser maneja la estructura global del programa: declaraciones de funciones, tipos y protocolos, así como los terminadores de declaración.
+
+Para las expresiones se usa un Pratt parser (en \src{hulk-parsegen/src/runtime/pratt.rs}). Esta decisión es adecuada porque las expresiones de \hulk{} tienen múltiples niveles de precedencia, operadores prefijos, sufijos de llamada, acceso por punto, indexación, type test, type cast y lambdas; representar todo eso en una gramática LL(1) obligaría a añadir decenas de no-terminales intermedios.
+
+La configuración del Pratt parser se declara en \src{PrattConfig}:
+
+\begin{lstlisting}[language=Rust,caption={Configuración del Pratt parser}]
+pub struct PrattConfig {
+    pub binary_ops: HashMap<String, OperatorInfo>, // precedencia + asociatividad
+    pub unary_prefix_ops: HashSet<String>,
+    pub primary_tokens: HashSet<String>,
+    pub lparen: String, pub rparen: String,
+    pub new_kw: Option<String>,
+    pub self_kw: Option<String>,
+    pub base_kw: Option<String>,
+    pub dot: Option<String>,
+    pub is_kw: Option<String>,
+    pub as_kw: Option<String>,
+    pub lbracket: Option<String>, pub rbracket: Option<String>,
+    pub arrow: Option<String>, pub funcarrow: Option<String>,
+    pub if_kw: ..., pub while_kw: ..., pub for_kw: ..., // control-flow como expresiones
+    pub lbrace: ..., pub semicolon: ..., pub let_kw: ...,
+}
+\end{lstlisting}
+
+Los niveles de precedencia reales de \hulk{} están registrados en la tabla de operadores binarios:
+
+\begin{longtable}{p{3cm}p{3.5cm}p{2cm}p{5.5cm}}
+\toprule
+\textbf{Precedencia} & \textbf{Operadores} & \textbf{Asoc.} & \textbf{Ejemplo} \\
+\midrule
+1 & \src{|} (or) & Izquierda & \src{a | b} \\
+2 & \src{\&} (and) & Izquierda & \src{a \& b} \\
+3 & \src{==}, \src{!=} & Izquierda & \src{a == b} \\
+4 & \src{<}, \src{<=}, \src{>}, \src{>=} & Izquierda & \src{x < 5} \\
+5 & \src{@}, \src{@@} & Izquierda & \src{"a" @ "b"} \\
+6 & \src{+}, \src{-} & Izquierda & \src{x + 1} \\
+7 & \src{*}, \src{/}, \src{\%} & Izquierda & \src{x * 2} \\
+8 & \texttt{\textasciicircum} (pow) & Derecha & \texttt{2 \textasciicircum{} 10} \\
+\bottomrule
+\end{longtable}
+
+El método central es \src{parse\_expression\_bp(min\_bp)}, que implementa el algoritmo de Pratt: parsea un prefijo, luego itera consumiendo operadores infijos o sufijos siempre que su precedencia sea mayor o igual a \src{min\_bp}. Para operadores asociativos por la derecha (como \texttt{\textasciicircum}) el umbral del lado derecho es igual al nivel actual en lugar de uno más.
+
+Los sufijos se manejan con prioridad absoluta sobre operadores binarios, sin entrar en la tabla de precedencias: las llamadas \src{f(args)}, el acceso por punto \src{obj.method()}, la indexación \src{v[i]}, y los operadores \src{is}/\src{as} se procesan como sufijos dentro del bucle principal de \src{parse\_expression\_bp\_impl}. Esto refleja que en \hulk{} el acceso a miembros y la indexación tienen mayor precedencia que cualquier operador binario.
+
+El Pratt parser también maneja recursión controlada a través de un contador de profundidad con límite \src{MAX\_PARSE\_DEPTH = 512}, lo que evita desbordamientos de pila con expresiones muy anidadas.
+
+\subsection{Crate \src{hulk-frontend}: AST y pipeline de parseo}
+
+El crate \src{hulk-frontend} expone la API pública de parseo. La función \src{parse\_hulk\_types\_program(source)} es el punto de entrada que usan todos los demás crates. Internamente invoca el pipeline completo: lexer → tokens → parser LL(1) → CST → \src{AstBuilder} → \src{Program}.
+
+La separación entre CST (árbol de sintaxis concreta, manejado por \src{hulk-parsegen}) y AST (árbol de sintaxis abstracta, construido por \src{AstBuilder} en \src{hulk-frontend/src/builder.rs}) es una decisión deliberada. El CST refleja la gramática y puede contener nodos auxiliares como \src{LetBindingTail}, \src{ElifList} o \src{GroupExpr}. El AST elimina esos detalles y produce una estructura limpia para las fases posteriores.
+
+El AST principal está definido en \src{hulk-frontend/src/ast.rs}:
+
+\begin{lstlisting}[language=Rust,caption={Estructura raíz del AST}]
+pub struct Program {
+    pub declarations: Vec<Decl>,
+    pub entry: Expr,
+}
+
+pub enum Decl {
+    Function(FunctionDecl),
+    Type(TypeDecl),
+    Protocol(ProtocolDecl),
+}
+\end{lstlisting}
+
+Las expresiones del AST cubren todos los constructos del lenguaje: \src{Number}, \src{String}, \src{Bool}, \src{Var}, \src{Unary}, \src{Binary}, \src{Assign}, \src{Let}, \src{Block}, \src{If}, \src{While}, \src{For}, \src{Call}, \src{MethodCall}, \src{New}, \src{MemberAccess}, \src{SelfRef}, \src{BaseCall}, \src{TypeTest}, \src{TypeCast}, \src{VectorLiteral}, \src{VectorGenerator}, \src{NewVector}, \src{VectorIndex}, \src{Lambda}. Cada nodo incluye un \src{Span} con información de posición para diagnósticos.
+
+La distinción \src{FunctionDecl::is\_macro} marca si la declaración usa \src{define} en lugar de \src{function}. La fase semántica usa esta distinción para clasificar el tipo de declaración.
+
+El driver distingue errores léxicos de sintácticos: si el mensaje contiene ``lex error'', ``Unterminated'' o ``unexpected character'', sale con código 1; si es un error de gramática, sale con código 2. Esto permite a los evaluadores automáticos categorizar los errores por fase.
+
+% ============================================================
+\section{Análisis semántico e HIR tipada}
+
+\subsection{Crate \src{hulk-sema}: responsabilidades generales}
+
+El crate \src{hulk-sema} es el módulo central del compilador. Recibe un \src{Program} (AST) y produce un \src{SemanticProgram} que contiene tres elementos:
+
+\begin{lstlisting}[language=Rust,caption={Contrato de salida de la fase semántica}]
+pub struct SemanticProgram {
+    pub hir: HirProgram,         // HIR tipada lista para lowering
+    pub registry: TypeRegistry,  // registro completo de tipos y protocolos
+    pub functions: HashMap<String, FunctionType>, // firmas resueltas
+}
+\end{lstlisting}
+
+Las tareas principales son: registrar funciones, tipos, protocolos y builtins; construir el \src{TypeRegistry}; resolver scopes y símbolos; validar aridad y tipos en llamadas; resolver \src{self}, \src{base}, atributos y despacho de métodos; verificar herencia, ciclos y overrides; comprobar conformidad de protocolos; inferir tipos cuando faltan anotaciones; y producir HIR tipada.
+
+\subsection{Sistema de tipos: \src{Type} y \src{TypeRegistry}}
+
+El sistema de tipos internos usa una enumeración \src{Type} con variantes: \src{Number}, \src{String}, \src{Boolean}, \src{Object}, \src{User(String)}, \src{Vector(Box<Type>)}, \src{Iterable(Box<Type>)}, \src{Functor}, y \src{Unknown}. El tipo \src{Unknown} actúa como centinela de error: permite que el chequeo continúe después de encontrar un error sin propagar cascadas de diagnósticos falsos.
+
+El \src{TypeRegistry} (en \src{hulk-sema/src/context.rs}) almacena toda la información de tipos de usuario: nombre, parámetros de constructor, padre, atributos, métodos y protocolos que conforman. Su construcción ocurre en varias pasadas:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Primera pasada: se recogen los nombres de todos los tipos y protocolos para permitir referencias adelantadas.
+    \item Segunda pasada: se rellenan atributos, métodos, firmas y relaciones de herencia.
+    \item Tercera pasada: se propagan parámetros de constructor en herencia pasante (cuando un hijo no declara sus propios parámetros).
+    \item Cuarta pasada: se registra \src{Iterable} como builtin si el usuario no lo definió explícitamente.
+\end{enumerate}
+
+La validación de herencia comprueba: padres inexistentes, herencia desde primitivos (\src{Number}, \src{String}, \src{Boolean}), ciclos de herencia mediante detección de caminos, y que los overrides de métodos preserven la firma del padre.
+
+\subsection{Scopes y entorno de tipos: \src{TypeEnv}}
+
+El chequeo de tipos usa una estructura \src{TypeEnv} (definida en \src{hulk-sema/src/checker.rs}) que mantiene una pila de scopes:
+
+\begin{lstlisting}[language=Rust,caption={Entorno de tipos con pila de scopes}]
+pub struct TypeEnv {
+    scopes: Vec<HashMap<String, Type>>,   // pila de entornos léxicos
+    pub functions: HashMap<String, FunctionType>,
+    pub registry: TypeRegistry,
+    pub current_type: Option<String>,      // tipo activo (para self)
+    pub current_type_parent: Option<String>, // padre del tipo activo (para base)
+    pub current_method: Option<String>,    // método activo (para base())
+    errors: Vec<SemanticError>,
+}
+\end{lstlisting}
+
+La resolución de variables (\src{resolve\_var}) busca hacia arriba en la pila de scopes (\src{iter().rev()}), lo que implementa el shadowing léxico correctamente. Al entrar a un bloque \src{let} o al cuerpo de una función se llama a \src{push\_scope()}; al salir se llama a \src{pop\_scope()}.
+
+La resolución de atributos (\src{self.attr}) usa \src{current\_type} para buscar el atributo en el \src{TypeRegistry}. La resolución de llamadas a \src{base()} usa \src{current\_type\_parent} y \src{current\_method} para localizar exactamente el método del padre correspondiente.
+
+\subsection{Inferencia iterativa de tipos}
+
+Una decisión clave de diseño fue implementar inferencia iterativa en el \src{HirBuilder} (\src{hulk-sema/src/hir\_builder.rs}, el módulo más grande con más de 2800 líneas). En lugar de ejecutar una sola pasada de chequeo, el \src{HirBuilder} itera:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Ejecuta una pasada de análisis sobre funciones, métodos y constructores.
+    \item Si alguna firma cambió respecto a la pasada anterior, repite.
+    \item Solo cuando no hay cambios ejecuta una pasada final que reporta errores de parámetros no resueltos.
+\end{enumerate}
+
+Este diseño permite refinar firmas parciales. Si una función usa un parámetro en una suma numérica, el compilador puede inferir que es \src{Number}. Si una llamada pasa un argumento concreto a una función con firma parcial, la firma se refina desde el sitio de uso. Esto soporta casos como:
+
+\begin{lstlisting}[language=HULK,caption={Inferencia desde el cuerpo}]
+function double(x) => x + x;  // x inferido como Number por la suma
+print(double(21));             // imprime 42
+\end{lstlisting}
+
+\begin{lstlisting}[language=HULK,caption={Inferencia desde el sitio de llamada}]
+function id(x) => x;          // x inferido como String desde la llamada
+print(id("hello"));
+\end{lstlisting}
+
+\subsection{HIR tipada: estructura y contratos}
+
+La HIR está definida en \src{hulk-sema/src/hir.rs}. Es el contrato entre la semántica y el lowering. Cada expresión HIR tiene cuatro campos:
+
+\begin{lstlisting}[language=Rust,caption={Nodo raíz de la HIR}]
+pub struct HirExpr {
+    pub id: HirId,    // identificador único (u32)
+    pub span: Span,   // posición en el fuente
+    pub ty: Type,     // tipo resuelto por la semántica
+    pub kind: HirExprKind,
+}
+\end{lstlisting}
+
+Los identificadores de símbolos (\src{SymbolId(u32)}) resuelven la ambigüedad entre variables con el mismo nombre en diferentes scopes. Cada binding de variable tiene su propio \src{SymbolId}; las referencias a esa variable usan el mismo ID, lo que permite al lowering generar nombres de locales únicos.
+
+Las llamadas a funciones se clasifican en tres variantes de \src{HirCallee}:
+
+\begin{lstlisting}[language=Rust,caption={Clasificación de callees en HIR}]
+pub enum HirCallee {
+    Builtin { name: String, signature: FunctionType },
+    GlobalFunction { name: String, signature: FunctionType },
+    LocalFunctor { name: String, symbol: SymbolId, signature: FunctionType },
+}
+\end{lstlisting}
+
+Las llamadas a métodos usan \src{DispatchKind} para distinguir el tipo de despacho:
+
+\begin{lstlisting}[language=Rust,caption={Tipos de despacho de métodos}]
+pub enum DispatchKind {
+    Virtual {
+        receiver_static_type: Type,
+        method_name: String,
+        signature: FunctionType,
+    },
+    Static {
+        function_label: String,
+        signature: FunctionType,
+    },
+    Base {
+        parent_type: String,
+        method_name: String,
+        signature: FunctionType,
+    },
+}
+\end{lstlisting}
+
+El despacho \src{Virtual} se usa cuando el tipo estático del receptor es un tipo de usuario o protocolo (se resuelve en runtime via vtable). El despacho \src{Static} ocurre cuando el tipo es concreto y el método no puede ser sobreescrito. El despacho \src{Base} es específico para llamadas \src{base()} dentro de métodos sobreescritos.
+
+Los accesos a atributos usan \src{ResolvedMember::Attribute} que guarda el tipo propietario (\src{owner\_type}) y el nombre del atributo, lo que el lowering usa para generar el ID de atributo correcto según el layout del tipo.
+
+\subsection{Errores semánticos}
+
+La enumeración \src{SemanticError} (en \src{hulk-sema/src/error.rs}) cubre más de 25 casos: funciones duplicadas, parámetros duplicados, símbolos indefinidos, métodos indefinidos, aridad incorrecta, tipos desconocidos, incompatibilidades de tipo, operandos inválidos, condiciones no booleanas, inferencia fallida, herencia circular, métodos faltantes de protocolos, acceso a atributos privados, herencia desde primitivos y firmas incompatibles en override.
+
+Las tres variantes más frecuentes para el usuario (\src{UndefinedVariable}, \src{UndefinedFunction} y \src{UndefinedMethod}) llevan un campo \src{Span \{ line, col \}} que se propaga desde el nodo AST correspondiente. Cuando el span es no-nulo el mensaje incluye la ubicación:
+
+\begin{lstlisting}[caption={Ejemplos de errores semánticos con ubicación}]
+SEMANTIC error: Undefined variable 'x' at line 3:9
+SEMANTIC error: Undefined function 'foo' at line 7:1
+SEMANTIC error: Undefined method 'bar' for type 'MyType' at line 12:5
+\end{lstlisting}
+
+Esta variedad de errores es importante para la evaluación: el compilador no solo acepta programas correctos, sino que rechaza programas inválidos con diagnósticos diferenciados por categoría.
+
+% ============================================================
+\section{Representación intermedia propia (Hulk IR)}
+
+\subsection{Motivación y diseño general}
+
+La Hulk IR actúa como puente entre la HIR semántica y el backend LLVM. Su función es hacer explícitos los valores intermedios, el control de flujo, los layouts lógicos de objetos y las operaciones de runtime, sin depender de la sintaxis de alto nivel ni comprometerse con los detalles de memoria de LLVM.
+
+La IR está definida en \src{hulk-ir/src/lib.rs}. Un \src{IrProgram} contiene cuatro componentes:
+
+\begin{lstlisting}[language=Rust,caption={Estructura de IrProgram}]
+pub struct IrProgram {
+    pub types: Vec<IrType>,       // layouts lógicos de tipos de usuario
+    pub data: Vec<IrData>,        // datos estáticos (principalmente strings)
+    pub functions: Vec<IrFunction>, // funciones, métodos, lambdas y entry
+    pub entry: FunctionId,        // función de entrada del programa
+}
+\end{lstlisting}
+
+Textualmente se imprime en tres secciones: \src{.TYPES}, \src{.DATA} y \src{.CODE}, lo que facilita la inspección manual y las golden tests.
+
+\subsection{Tipos e identificadores con tipos fuertes}
+
+Toda referencia a un elemento de la IR usa un identificador con tipo fuerte (un \src{struct} newtype sobre \src{u32}): \src{TypeId}, \src{AttrId}, \src{MethodSlot}, \src{DataId}, \src{FunctionId}, \src{ParamId}, \src{LocalId}, \src{TempId}, \src{LabelId}. Esta decisión evita confundir accidentalmente, por ejemplo, un \src{LocalId} con un \src{ParamId} en el código del lowering.
+
+Las referencias de tipo en instrucciones usan \src{IrTypeRef}:
+
+\begin{lstlisting}[language=Rust,caption={Sistema de tipos en la IR}]
+pub enum IrTypeRef {
+    Number,
+    String,
+    Boolean,
+    Object,
+    User(String),
+    Vector(Box<IrTypeRef>),
+    Iterable(Box<IrTypeRef>),
+    Functor {
+        capture_types: Vec<IrTypeRef>,
+        params: Vec<IrTypeRef>,
+        ret: Box<IrTypeRef>,
+    },
+    Unknown,
+}
+\end{lstlisting}
+
+La variante \src{Functor} incluye \src{capture\_types} además de los parámetros y el retorno. Esta información extra permite al backend LLVM generar la estructura de closure correcta con el número exacto de capturas.
+
+\subsection{Layouts de tipos: atributos y vtable}
+
+Un \src{IrType} almacena el layout lógico de un tipo de usuario:
+
+\begin{lstlisting}[language=Rust,caption={Layout lógico de un tipo en IR}]
+pub struct IrType {
+    pub id: TypeId,
+    pub name: String,
+    pub parent: Option<String>,
+    pub attributes: Vec<IrAttribute>, // cada uno con AttrId, nombre y tipo
+    pub methods: Vec<IrMethod>,       // cada uno con MethodSlot, nombre y función
+}
+\end{lstlisting}
+
+Los métodos se referencian por \src{MethodSlot}, que es el índice dentro de la vtable. Si un tipo hijo sobreescribe un método del padre, usa el mismo \src{MethodSlot} pero apunta a una función diferente. Esto es exactamente lo que el backend necesita para construir vtables correctas.
+
+\subsection{Funciones: clasificación por kind}
+
+Cada \src{IrFunction} tiene un campo \src{kind} que distingue cuatro categorías:
+
+\begin{lstlisting}[language=Rust,caption={Tipos de función en IR}]
+pub enum IrFunctionKind {
+    Entry,                          // función de entrada del programa
+    Function,                       // función global
+    Method { owner_type: String, method_name: String }, // método de tipo
+    Lambda,                         // lambda capturada
+}
+\end{lstlisting}
+
+Esta distinción permite al backend tratar cada categoría apropiadamente: las funciones de método reciben \src{self} como primer parámetro implícito; las lambdas reciben la closure como contexto adicional.
+
+Una función IR declara por separado sus parámetros (\src{Vec<IrParam>}), locales (\src{Vec<IrLocal>}), y temporales (\src{Vec<IrTemp>}). Los temporales son generados automáticamente por el lowering para resultados intermedios de expresiones. Los locales corresponden a variables nombradas (\src{let}, parámetros de for, variables de captura). Esta separación entre temporales y locales refleja la distinción usual en IR de tres direcciones.
+
+\subsection{Valores y lugares: la distinción read/write}
+
+La IR distingue entre \src{IrValue} (lo que se puede leer) e \src{IrPlace} (donde se puede escribir):
+
+\begin{lstlisting}[language=Rust,caption={Valores y lugares en IR}]
+pub enum IrValue {
+    Temp(TempId), Local(LocalId), Param(ParamId),
+    ConstNumber(f64), ConstBool(bool),
+    DataRef(DataId),  // referencia a string estático
+    Null, Unit,
+}
+
+pub enum IrPlace {
+    Temp(TempId),
+    Local(LocalId),
+}
+\end{lstlisting}
+
+Solo los temporales y locales son escribibles (\src{IrPlace}). Los parámetros son de solo lectura (\src{IrValue} pero no \src{IrPlace}). Las constantes y referencias a datos tampoco son escribibles. Esta distinción hace que las asignaciones ilegales sean imposibles de expresar en la IR.
+
+\subsection{Conjunto de instrucciones}
+
+El conjunto de instrucciones cubre todas las operaciones necesarias del lenguaje:
+
+\begin{longtable}{p{4.5cm}p{9.5cm}}
+\toprule
+\textbf{Instrucción} & \textbf{Descripción} \\
+\midrule
+\src{Assign\{dst, src\}} & Copia de valor. \\
+\src{Unary\{dst, op, value\}} & Operación unaria (\src{Not}, \src{Neg}). \\
+\src{Binary\{dst, op, l, r\}} & Operación binaria (16 operadores: aritméticos, comparación, lógicos, concatenación). \\
+\src{Jump(label)} & Salto incondicional. \\
+\src{Branch\{cond, then, else\}} & Salto condicional. \\
+\src{Label(id)} & Destino de salto. \\
+\src{Return(Option<IrValue>)} & Retorno de función. \\
+\src{Call\{dst, function, args\}} & Llamada a función por nombre. \\
+\src{StaticCall\{...\}} & Llamada estática a método (sin búsqueda vtable). \\
+\src{VirtualCall\{receiver, static\_type, method, slot, ...\}} & Llamada dinámica por slot de vtable. \\
+\src{BaseCall\{parent\_type, method, ...\}} & Llamada al método del padre (\src{base()}). \\
+\src{Allocate\{dst, type\_name\}} & Asignación de objeto en heap. \\
+\src{GetAttr\{dst, object, attr\}} & Lectura de atributo por \src{AttrId}. \\
+\src{SetAttr\{object, attr, value\}} & Escritura de atributo por \src{AttrId}. \\
+\src{NewVector\{dst, elements\}} & Creación de vector con elementos iniciales. \\
+\src{VectorLen\{dst, vector\}} & Longitud del vector. \\
+\src{VectorPush\{vector, value\}} & Inserción al final del vector. \\
+\src{VectorGet\{dst, vector, idx\}} & Indexación del vector. \\
+\src{VectorSet\{vector, idx, value\}} & Asignación por índice. \\
+\src{MakeClosure\{dst, function, captures\}} & Construcción de closure con capturas. \\
+\src{ClosureCall\{dst, closure, args\}} & Invocación de closure. \\
+\src{GetCapture\{dst, closure, idx, ty\}} & Lectura de variable capturada. \\
+\src{TypeTest\{dst, value, type\_name\}} & Operador \src{is}. \\
+\src{TypeCast\{dst, value, type\_name\}} & Operador \src{as}. \\
+\bottomrule
+\end{longtable}
+
+La instrucción \src{VirtualCall} incluye \src{receiver\_static\_type} además del slot. Esto permite al backend LLVM buscar la vtable del tipo estático del receptor para localizar el slot, en lugar de necesitar un mecanismo de despacho más complejo.
+
+La instrucción \src{GetCapture} se añadió explícitamente para separar la lectura de variables capturadas del mecanismo general de despacho. Un acceso a captura dentro de una lambda no es lo mismo que un acceso a local o parámetro; requiere desreferenciar la estructura de closure.
+
+% ============================================================
+\section{Lowering: de HIR a Hulk IR}
+
+\subsection{Responsabilidades del crate \src{hulk-lower}}
+
+El módulo \src{hulk-lower/src/lib.rs} (1517 líneas) transforma el \src{SemanticProgram} en un \src{IrProgram}. No realiza validación semántica; la HIR ya es correcta. Su función es:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Crear los layouts de tipos (\src{IrType}) con atributos heredados y slots de método.
+    \item Generar funciones IR para cada función global, método y lambda.
+    \item Traducir expresiones HIR a secuencias de instrucciones IR con temporales explícitos.
+    \item Resolver llamadas de método a \src{VirtualCall}, \src{StaticCall} o \src{BaseCall} según el \src{DispatchKind}.
+    \item Manejar vectores, rangos, closures y generadores.
+\end{enumerate}
+
+\subsection{Construcción de layouts de tipos y vtables}
+
+Al procesar un \src{HirTypeDecl}, el lowering:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Hereda los atributos del padre (si existe) con sus \src{AttrId} originales.
+    \item Añade los atributos propios con IDs consecutivos a partir del máximo del padre.
+    \item Hereda los slots de métodos del padre.
+    \item Para cada método propio: si el nombre coincide con un slot heredado (override), actualiza la función destino del slot existente; si es nuevo, añade un slot con el siguiente índice disponible.
+\end{enumerate}
+
+Esta lógica de herencia de slots garantiza que las vtables de los hijos tengan el mismo layout que la del padre para los métodos heredados, lo cual es el requisito fundamental del despacho dinámico polimórfico.
+
+\subsection{Lowering de expresiones}
+
+El lowering de expresiones sigue un patrón uniforme: cada expresión HIR se traduce a una secuencia de instrucciones que deja el resultado en un nuevo temporal. El lowering acumula instrucciones en un buffer mutable y devuelve el \src{IrValue} que contiene el resultado.
+
+Para expresiones complejas como bloques, el lowering procesa cada subexpresión en orden y descarta los resultados intermedios, conservando solo el resultado de la última expresión del bloque. Para \src{if/elif/else}, genera etiquetas y saltos condicionales:
+
+\begin{lstlisting}[language=IR,caption={Patrón de lowering para if-else}]
+  branch %cond ? L_then : L_else
+label L_then
+  ... codigo then ...
+  %t_result = %t_then
+  jump L_end
+label L_else
+  ... codigo else ...
+  %t_result = %t_else
+label L_end
+  return %t_result
+\end{lstlisting}
+
+Para \src{while}, genera un bucle con etiqueta de comprobación y etiqueta de salida. Para \src{for}, invoca \src{next()} y \src{current()} del iterable a través de \src{VirtualCall} usando los slots conocidos del protocolo \src{Iterable}.
+
+\subsection{Lowering de lambdas y closures}
+
+El lowering de lambdas es uno de los procesos más interesantes del compilador. Al encontrar un nodo \src{HirExprKind::Lambda}:
+
+\begin{enumerate}[label=\arabic*.]
+    \item Se identifican las variables capturadas (variables del entorno que se usan dentro de la lambda pero que no son parámetros suyos).
+    \item Se genera una función IR separada con kind \src{Lambda}, que recibe un parámetro implícito adicional: la closure misma.
+    \item En el cuerpo de esa función, los accesos a las variables capturadas se convierten en instrucciones \src{GetCapture} indexadas por posición.
+    \item En el sitio de creación de la lambda, se emite \src{MakeClosure} con la función generada y la lista de valores capturados actuales.
+\end{enumerate}
+
+Esta estrategia separa limpiamente el cuerpo de la lambda de su entorno de captura, que es la representación estándar en compiladores modernos con soporte de funciones anónimas.
+
+% ============================================================
+\section{Backend LLVM y runtime}
+
+\subsection{Crate \src{hulk-codegen-llvm}: emisión de LLVM IR}
+
+El crate \src{hulk-codegen-llvm} convierte un \src{IrProgram} en un módulo textual de LLVM IR (2190 líneas). La función de entrada es \src{emit\_llvm(\&IrProgram) -> Result<String, LlvmCodegenError>}.
+
+El proceso de emisión tiene varias etapas:
+\begin{enumerate}[label=\arabic*.]
+    \item Declarar las funciones externas del runtime (\src{declare void @hulk\_print\_number(double)}, etc.).
+    \item Emitir las vtables de los tipos de usuario como constantes globales de tipo \src{[N x ptr]}.
+    \item Emitir las cadenas de texto estáticas como constantes globales de tipo \src{[N x i8]}.
+    \item Emitir las funciones del programa (globales, métodos, lambdas, entry).
+    \item Emitir una función \src{main()} C-compatible que llama a \src{hulk\_entry()} y retorna su resultado.
+\end{enumerate}
+
+\subsection{Mapeo de tipos IR a LLVM}
+
+\begin{longtable}{p{4cm}p{4cm}p{6cm}}
+\toprule
+\textbf{Tipo IR} & \textbf{Tipo LLVM} & \textbf{Comentario} \\
+\midrule
+\src{Number} & \src{double} & Aritmética y comparaciones en punto flotante. \\
+\src{Boolean} & \src{i1} & Se convierte a \src{i8} en fronteras con C si es necesario. \\
+\src{String} & \src{ptr} & Puntero a \src{HulkString} del runtime. \\
+\src{Object} y \src{User(T)} & \src{ptr} & Puntero a objeto con vtable al inicio. \\
+\src{Vector(T)} & \src{ptr} & Puntero a \src{HulkVector}. \\
+\src{Iterable(T)} & \src{ptr} & Objeto iterable con vtable (puede ser Vector o Range). \\
+\src{Functor} & \src{ptr} & Puntero a \src{HulkClosure}. \\
+\bottomrule
+\end{longtable}
+
+La decisión de usar \src{ptr} opaco (LLVM opaque pointers) en lugar de tipos estructurados tipados (\src{\%struct.HulkObject*}) simplifica la emisión de LLVM IR porque todos los objetos del runtime son punteros intercambiables. El backend no necesita conocer el layout interno de los objetos; eso es responsabilidad del runtime.
+
+Sin embargo, esto generó un problema de compatibilidad: clang < 16 requería la flag \src{-mllvm -opaque-pointers} para manejar el tipo \src{ptr}, mientras que clang 16+ lo quitó porque los punteros opacos ya son el comportamiento predeterminado. La solución fue detectar la versión de clang en tiempo de ejecución:
+
+\begin{lstlisting}[language=Rust,caption={Detección dinámica de versión de clang}]
+let needs_opaque_flag = process::Command::new("clang")
+    .arg("--version")
+    .output()
+    .ok()
+    .and_then(|o| String::from_utf8(o.stdout).ok())
+    .and_then(|s| {
+        s.split_whitespace()
+            .skip_while(|t| *t != "version")
+            .nth(1)
+            .and_then(|v| v.split('.').next())
+            .and_then(|maj| maj.parse::<u32>().ok())
+    })
+    .map(|maj| maj < 16)
+    .unwrap_or(false);
+\end{lstlisting}
+
+Este fragmento aparece en \src{hulk-driver/src/main.rs} y también en \src{hulk-codegen-llvm/tests/backend\_minimal.rs} para las pruebas de integración. La misma lógica en ambos sitios garantiza que tanto el driver como las pruebas sean compatibles con clang 14 (desarrollo local) y clang 17/18 (CI).
+
+\subsection{ABI con el runtime}
+
+El backend declara las siguientes funciones externas del runtime al inicio del módulo LLVM:
+
+\begin{lstlisting}[caption={Declaraciones de ABI con el runtime (completas)}]
+; Salida
+declare void @hulk_print_number(double)
+declare void @hulk_print_bool(i8)
+declare void @hulk_print_string(ptr)
+; Strings
+declare ptr  @hulk_string_concat(ptr, ptr)
+declare ptr  @hulk_string_concat_spaced(ptr, ptr)
+declare i8   @hulk_string_equals(ptr, ptr)
+declare ptr  @hulk_string_from_number(double)
+declare ptr  @hulk_string_from_bool(i8)
+declare i64  @hulk_string_len(ptr)
+declare ptr  @hulk_string_sub(ptr, i64, i64)
+; Matemáticas estándar
+declare double @hulk_sqrt(double)
+declare double @hulk_sin(double)
+declare double @hulk_cos(double)
+declare double @hulk_exp(double)
+declare double @hulk_log(double, double)
+declare double @hulk_pow(double, double)
+declare double @hulk_rand()
+; Matemáticas extendidas
+declare double @hulk_abs(double)
+declare double @hulk_floor(double)
+declare double @hulk_ceil(double)
+declare double @hulk_round(double)
+declare double @hulk_min(double, double)
+declare double @hulk_max(double, double)
+; Objetos y vtables
+declare ptr  @hulk_alloc_object(i64, i64, ptr)
+declare ptr  @hulk_object_method(ptr, i64)
+declare double @hulk_object_get_number(ptr, i64)
+declare void @hulk_object_set_number(ptr, i64, double)
+declare i8   @hulk_object_is(ptr, i64)
+declare ptr  @hulk_object_as(ptr, i64)
+; Vectores
+declare ptr  @hulk_range(double, double)
+declare ptr  @hulk_vector_new()
+declare void @hulk_vector_push(ptr, i64)
+declare i64  @hulk_vector_len(ptr)
+declare i64  @hulk_vector_get(ptr, i64)
+declare void @hulk_vector_set(ptr, i64, i64)
+; Closures
+declare ptr  @hulk_closure_alloc(ptr, i64)
+declare void @hulk_closure_set_capture(ptr, i64, ptr)
+declare ptr  @hulk_closure_get_capture(ptr, i64)
+; Errores fatales
+declare void @hulk_abort(ptr)
+\end{lstlisting}
+
+Cada categoría de operación del runtime tiene su propia familia de funciones con tipos concretos. Esto evita usar un mecanismo de boxing universal que requeriría más conversiones y aumentaría la complejidad del backend.
+
+\subsection{Crate \src{runtime/}: estructuras y modelo de objetos en C}
+
+El runtime está en \src{runtime/hulk\_runtime.h} y \src{runtime/hulk\_runtime.c}. Define las estructuras concretas que se crean en el heap durante la ejecución.
+
+La estructura de vtable es el núcleo del modelo de objetos:
+
+\begin{lstlisting}[language=C,caption={Estructura HulkVTable}]
+typedef struct HulkVTable {
+    int64_t            type_id;
+    struct HulkVTable* parent;      // para traversal en is/as
+    int64_t            method_count;
+    void**             methods;     // array de punteros a funciones
+    const char*        type_name;   // para mensajes de error en runtime
+} HulkVTable;
+\end{lstlisting}
+
+En LLVM IR el tipo correspondiente es \src{\%HulkVTable = type \{ i64, ptr, i64, ptr, ptr \}}.
+
+Una invariante crítica de diseño: \textbf{todos los objetos del runtime (objetos de usuario, vectores, rangos) deben comenzar con un \src{HulkVTable*} como primer campo}. Esto permite que \src{hulk\_object\_method} pueda obtener el slot correcto de cualquier objeto sin conocer su tipo concreto en tiempo de compilación.
+
+Los objetos de usuario se asignan con \src{hulk\_alloc\_object(type\_id, attr\_count, vtable)}. Internamente, el runtime mantiene un array flexible de atributos representados como \src{int64\_t} (64 bits), suficiente para almacenar doubles (por bits), punteros y valores booleanos. Los accessors diferenciados (\src{get\_number}/\src{set\_number}, \src{get\_string}/\src{set\_string}, etc.) hacen las conversiones necesarias.
+
+Los vectores siguen la misma invariante:
+
+\begin{lstlisting}[language=C,caption={Estructura HulkVector}]
+typedef struct HulkVector {
+    HulkVTable* vtable;  // primer campo: slot 0 = next, slot 1 = current
+    int64_t*    data;    // array dinámico de elementos como int64_t
+    int64_t     len;
+    int64_t     cap;
+    int64_t     cursor;  // para iteración como Iterable
+} HulkVector;
+\end{lstlisting}
+
+Los rangos también empiezan con \src{HulkVTable*} y son iterables directamente:
+
+\begin{lstlisting}[language=C,caption={Estructura HulkRange como iterable}]
+typedef struct HulkRange {
+    HulkVTable* vtable;     // slot 0 = next, slot 1 = current
+    double      current_val;
+    double      end_val;
+} HulkRange;
+\end{lstlisting}
+
+Las closures usan un arreglo flexible de capturas (C99 flexible array member):
+
+\begin{lstlisting}[language=C,caption={Estructura HulkClosure con capturas}]
+typedef struct HulkClosure {
+    void*   fn_ptr;           // puntero a la función lambda
+    int64_t num_captures;     // número de capturas
+    void*   captures[];       // flexible array: capturas como punteros opacos
+} HulkClosure;
+\end{lstlisting}
+
+Toda captura se almacena como \src{void*}. En el lado LLVM, los valores no-puntero (doubles, bools) deben coercionarse a punteros antes de ser capturados, lo que es un área que requiere cuidado adicional.
+
+\subsection{Builtins matemáticos y métodos de String}
+
+Además de las funciones matemáticas básicas (\src{sqrt}, \src{sin}, \src{cos}, \src{exp}, \src{log}, \src{pow}, \src{rand}), el compilador expone seis builtins adicionales declarados en \src{hulk-sema/src/builtins.rs}:
+
+\begin{longtable}{p{3cm}p{2.5cm}p{8cm}}
+\toprule
+\textbf{Builtin} & \textbf{Aridad} & \textbf{Función runtime} \\
+\midrule
+\src{abs(x)} & 1 & \src{hulk\_abs(double) -> double} \\
+\src{floor(x)} & 1 & \src{hulk\_floor(double) -> double} \\
+\src{ceil(x)} & 1 & \src{hulk\_ceil(double) -> double} \\
+\src{round(x)} & 1 & \src{hulk\_round(double) -> double} \\
+\src{min(a,b)} & 2 & \src{hulk\_min(double,double) -> double} \\
+\src{max(a,b)} & 2 & \src{hulk\_max(double,double) -> double} \\
+\bottomrule
+\end{longtable}
+
+Las llamadas a métodos sobre un receptor de tipo \src{String} se enrutan a funciones dedicadas del runtime desde \src{emit\_string\_method\_call} en el backend:
+
+\begin{itemize}
+    \item \src{s.length()} / \src{s.size()} → llama \src{@hulk\_string\_len(ptr) -> i64}, convierte el resultado a \src{double}.
+    \item \src{s.substring(start, end)} → convierte los argumentos \src{Number} a \src{i64}, llama \src{@hulk\_string\_sub(ptr, i64, i64) -> ptr}.
+\end{itemize}
+
+\subsection{Comprobaciones de seguridad en runtime}
+
+El compilador implementa comprobaciones de seguridad en tiempo de ejecución que abortan con un mensaje diagnóstico ante operaciones ilegales. La función central es:
+
+\begin{lstlisting}[language=C,caption={Función de abort del runtime}]
+void hulk_abort(const char* msg) {
+    fputs("hulk runtime error: ", stderr);
+    fputs(msg, stderr);
+    fputc('\n', stderr);
+    exit(1);
+}
+\end{lstlisting}
+
+\textbf{División y módulo por cero.} El backend emite un guard antes de cada operación \src{/} o \src{\%}:
+
+\begin{lstlisting}[caption={Guard de división por cero generado por el backend}]
+  %divcheck = fcmp oeq double %rhs, 0.0
+  br i1 %divcheck, label %dz_err.N, label %dz_ok.N
+dz_err.N:
+  call void @hulk_abort(ptr @hulk_err_divzero)
+  unreachable
+dz_ok.N:
+  %result = fdiv double %lhs, %rhs
+\end{lstlisting}
+
+\textbf{Desreferencia nula en métodos.} \src{hulk\_object\_method} verifica que el receptor no sea nulo antes de acceder a la vtable. Un receptor nulo emite \texttt{``method call on null object''} y termina.
+
+\textbf{Bounds de vtable.} \src{hulk\_object\_method} verifica que \src{0 <= slot < method\_count}.
+
+\textbf{Acceso a atributos en nulo.} Las ocho funciones de acceso a atributos (\src{hulk\_object\_get\_number}, \src{hulk\_object\_set\_string}, etc.) comprueban que el puntero no sea nulo.
+
+\textbf{Índice de vector fuera de rango.} \src{hulk\_vector\_get} y \src{hulk\_vector\_set} rechazan índices negativos e índices $\geq$ \src{len}.
+
+\textbf{Fallo de cast.} \src{hulk\_object\_as} devuelve nulo si el test de tipo falla.
+
+\subsection{Driver e integración con \src{clang}}
+
+El driver (\src{hulk-driver/src/main.rs}) implementa el modo de compilación completo y cinco modos de debug (\src{--ast}, \src{--check}, \src{--hir}, \src{--ir}, \src{--emit-llvm}).
+
+En modo de compilación, el proceso es: parse → analyze → lower → emit LLVM → escribir \src{output.ll} → invocar \src{clang} con el runtime → eliminar \src{output.ll}. La búsqueda del runtime usa una estrategia de dos niveles: primero busca relativo al ejecutable (útil cuando se instala), y si no lo encuentra, relativo al directorio de trabajo (útil en desarrollo).
+
+Los códigos de salida del driver están documentados: código 1 para error léxico, 2 para error sintáctico, 3 para error semántico, 4 para error de lowering, 5 para error de codegen LLVM, 6 para error al escribir el archivo IR, 7 para error al invocar \src{clang}. Esta granularidad facilita la automatización y la depuración.
+
+\subsection{Makefile}
+
+\begin{lstlisting}[caption={Objetivos del Makefile}]
+build:
+    cargo build --release -p hulk-driver
+    cp target/release/hulkc ./hulk
+
+test: build
+    bash tests/hulk/run_tests.sh . tests/hulk
+
+clean:
+    cargo clean
+    rm -f hulk output output.ll
+\end{lstlisting}
+
+% ============================================================
+\section{Estrategia de pruebas}
+
+\subsection{Pruebas por capas}
+
+Cada crate tiene pruebas Rust propias. Las pruebas más representativas son:
+
+\begin{itemize}
+    \item \textbf{hulk-parsegen:} pruebas unitarias del Pratt parser que verifican precedencia, asociatividad, paréntesis, unarios, errores de paréntesis no cerrado y errores de RHS faltante.
+    \item \textbf{hulk-sema:} pruebas de chequeo de programas válidos e inválidos; pruebas de inferencia desde cuerpo, desde sitio de llamada y de parámetros de métodos.
+    \item \textbf{hulk-codegen-llvm:} pruebas de integración que compilan con \src{clang} y verifican la salida estándar de 35 casos concretos, incluyendo aritmética, booleanos, strings, concatenación, funciones, recursión, ciclos y builtins matemáticos.
+\end{itemize}
+
+\subsection{Pruebas de integración ejecutable}
+
+El conjunto \src{SUPPORTED\_CASES} en \src{hulk-codegen-llvm/tests/backend\_minimal.rs} define los casos de prueba que se ejecutan end-to-end: desde el código fuente \hulk{} hasta la comparación de la salida estándar del binario compilado. Esta es la validación más fuerte del compilador, porque verifica que el pipeline completo —semántica, IR, LLVM, runtime— produce el resultado correcto.
+
+Adicionalmente, hay una prueba de comportamiento negativo (\src{unsupported\_vector\_fails\_cleanly}) que verifica que el backend falla con un error \src{LlvmCodegenError::Unsupported} en lugar de generar código incorrecto, cuando se usa una característica que no está completamente implementada.
+
+\subsection{CI}
+
+El workflow de GitHub Actions ejecuta \src{cargo test --workspace --all-targets --locked}, que valida todas las pruebas del workspace bajo una instalación limpia de Rust estable. El workflow también valida el REPORT.md mediante conteo de palabras (mínimo 2000). La ejecución de pruebas \hulk{} se hace mediante \src{make test}, que requiere el binario \src{hulkc} y la carpeta de tests.
+
+% ============================================================
+\section{Extensiones del lenguaje}
+
+El compilador implementa siete extensiones sobre el núcleo mínimo de \hulk{}. Cada una atraviesa múltiples fases del compilador: no son azúcar sintáctica superficial, sino características que requirieron cambios coordinados en lexer, parser, AST, semántica, IR, lowering, backend y/o runtime. A continuación se documentan en profundidad, con su motivación, su alcance de implementación y ejemplos tomados directamente de la suite de pruebas.
+
+% ---
+\subsection{Extensión 1: inferencia de tipos sin anotaciones}
+
+\subsubsection{Motivación}
+
+En el núcleo de \hulk{}, las funciones pueden o no llevar anotaciones de tipo en sus parámetros y retorno. Sin inferencia, todos los parámetros sin anotación quedarían con tipo \src{Unknown} y el compilador rechazaría el programa. La inferencia automática permite escribir funciones genéricas sin sacrificar seguridad:
+
+\begin{lstlisting}[language=HULK,caption={Inferencia de tipos desde el cuerpo y el sitio de llamada}]
+function square(x) {    // x no tiene anotacion
+    x * x;              // la multiplicacion implica que x es Number
+}
+
+function clamp(val, lo, hi) {
+    min_val(max_val(val, lo), hi);   // inferencia interprocedural
+}
+
+if (square(5) == 25) print("ok") else print("fail");
+if (clamp(10, 0, 5) == 5) print("ok") else print("fail");
+\end{lstlisting}
+
+\subsubsection{Cómo se implementó}
+
+La inferencia opera en el \src{HirBuilder} (crate \src{hulk-sema}) mediante un algoritmo de punto fijo iterativo:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{Pasada de cuerpo:} se analiza el cuerpo de cada función. Si un parámetro aparece en una operación aritmética, se infiere \src{Number}; si aparece en una concatenación de strings, se infiere \src{String}; si aparece en un \src{!}, se infiere \src{Boolean}.
+    \item \textbf{Pasada de sitio de llamada:} se analizan los argumentos en cada invocación. Si se llama \src{f(42)}, se refina el primer parámetro de \src{f} a \src{Number}.
+    \item \textbf{Iteración hasta punto fijo:} si alguna firma cambió en la pasada, se repite. Esto propaga tipos a través de la cadena de llamadas (inferencia interprocedural).
+    \item \textbf{Pasada de error final:} solo cuando no hay más cambios se reportan parámetros que permanecen con tipo \src{Unknown} (error \src{CannotInferParameterType}).
+\end{enumerate}
+
+La misma lógica se aplica a métodos y a parámetros de constructores de tipos. Las pruebas de \src{hulk-sema/tests/function\_param\_inference.rs}, \src{method\_param\_inference.rs} y \src{type\_constructor\_param\_inference.rs} verifican estos casos. Un caso que falla correctamente es \src{function id(x) => x;} sin ninguna llamada: el parámetro queda sin restringir y el compilador emite un error diagnóstico específico.
+
+\subsubsection{Por qué mejora el sistema}
+
+Sin esta extensión, escribir una función auxiliar simple como \src{max}, \src{clamp} o \src{sum} requeriría anotar explícitamente todos los parámetros. La inferencia reduce el ruido tipográfico sin perder las garantías del sistema de tipos: el compilador sigue validando usos inconsistentes y los diagnósticos de error son precisos.
+
+% ---
+\subsection{Extensión 2: protocolos e interfaces estructurales}
+
+\subsubsection{Motivación}
+
+\hulk{} es un lenguaje con herencia nominal (las relaciones son explícitas). Sin protocolos, una función solo puede aceptar un tipo concreto o su jerarquía de herencia. Los protocolos añaden una segunda dimensión: la tipificación estructural. Una función puede declarar que acepta cualquier tipo que implemente ciertos métodos, sin importar la jerarquía de herencia.
+
+\begin{lstlisting}[language=HULK,caption={Polimorfismo estructural con interfaces}]
+interface Shape {
+    area(): Number;
+    name(): String;
+}
+
+type Square(s: Number) {
+    side: Number = s;
+    area(): Number { self.side * self.side; }
+    name(): String { "square"; }
+}
+
+type Triangle(b: Number, h: Number) {
+    base: Number = b;
+    height: Number = h;
+    area(): Number { self.base * self.height / 2; }
+    name(): String { "triangle"; }
+}
+
+let sq: Shape = new Square(4) in
+    if (sq.area() == 16) print("ok") else print("fail");
+
+let tr: Shape = new Triangle(6, 4) in
+    if (tr.area() == 12) print("ok") else print("fail");
+\end{lstlisting}
+
+\src{Square} y \src{Triangle} no heredan entre sí ni de una clase base común. Ambas conforman \src{Shape} porque implementan sus métodos. Una variable de tipo \src{Shape} puede apuntar a cualquiera de los dos.
+
+\subsubsection{Cómo se implementó}
+
+La implementación atraviesa el compilador completo:
+
+\begin{itemize}
+    \item \textbf{Lexer/parser:} se reconocen las palabras clave \src{protocol}, \src{interface} (alias de \src{protocol}) y \src{extends}.
+    \item \textbf{AST:} nodo \src{ProtocolDecl} con lista de firmas de métodos requeridos.
+    \item \textbf{TypeRegistry:} la construcción del registro valida la conformidad de cada tipo de usuario contra cada protocolo que aparezca como anotación de parámetro o variable. La validación comprueba que la aridad y los tipos sean compatibles.
+    \item \textbf{HIR:} cuando se llama un método sobre un receptor de tipo protocolo, el \src{DispatchKind} es \src{Virtual}, lo que garantiza despacho dinámico por vtable en tiempo de ejecución.
+    \item \textbf{IR y backend:} el \src{VirtualCall} busca el slot del método en la vtable del objeto concreto; el protocolo solo define que ese slot existe, no qué función apunta.
+\end{itemize}
+
+El protocolo \src{Iterable} ocupa un lugar especial: se registra automáticamente con dos métodos requeridos (\src{next(): Boolean} y \src{current(): Object}). Esto permite que cualquier tipo que implemente esos dos métodos sea consumible en un \src{for}, sin que el usuario tenga que declarar explícitamente que lo implementa.
+
+\subsubsection{Por qué mejora el sistema}
+
+Los protocolos e interfaces hacen posible el polimorfismo sin herencia forzada. Sin ellos, para hacer que \src{Square} y \src{Triangle} sean intercambiables habría que hacerlos heredar de una clase base abstracta, lo que contamina el diseño de la jerarquía de tipos. Con protocolos, el contrato es puramente de comportamiento. Esto también desacopla los módulos: una función puede declarar que solo necesita un \src{Printable} sin importarle si ese objeto es un \src{Point}, una \src{Person} o cualquier otro tipo futuro.
+
+% ---
+\subsection{Extensión 3: arreglos indexados con inicialización funcional}
+
+\subsubsection{Motivación}
+
+El lenguaje base no tiene colecciones de acceso directo por índice. La adición de arreglos permite representar tablas, matrices y secuencias con acceso en O(1), lo que abre la puerta a algoritmos numéricos, procesamiento de datos y estructuras de mayor complejidad.
+
+\subsubsection{Tres formas de creación}
+
+\begin{lstlisting}[language=HULK,caption={Arreglo simple, con inicializador y bidimensional}]
+// Arreglo simple: asignacion manual de elementos
+let a: Number[] = new Number[5] in {
+    a[0] := 10; a[1] := 20; a[2] := 30;
+    if (a[2] == 30) print("ok") else print("fail");
+};
+
+// Inicializador funcional: nuevo Number[5]{ i -> i * 2 }
+let a: Number[] = new Number[5]{ i -> i * 2 } in
+    if (a[3] == 6) print("ok") else print("fail");
+
+// Bidimensional: vector de vectores
+let matrix: Number[][] = new Number[][3] in {
+    let i = 0 in while (i < 3) {
+        matrix[i] := new Number[3];
+        i := i + 1;
+    };
+    if (matrix[1][2] == 0) print("ok") else print("fail");
+};
+\end{lstlisting}
+
+\subsubsection{Cómo se implementó}
+
+\begin{itemize}
+    \item \textbf{Pratt parser:} el prefijo \src{new} seguido de un identificador y \src{[} activa la rama de arreglo. El parser detecta si hay \src{][} (para \src{new T[][n]}), luego parsea la expresión de tamaño, y opcionalmente un bloque \src{\{ var -> body \}} como inicializador.
+    \item \textbf{AST:} \src{Expr::NewVector\{element\_type, size, init\}} donde \src{init} es opcional y contiene el nombre de la variable de índice y el cuerpo del inicializador.
+    \item \textbf{HIR:} \src{HirExprKind::VectorNew} con \src{element\_type}, \src{size} y \src{HirVectorNewInit} opcional.
+    \item \textbf{IR:} instrucción \src{NewVector\{dst, elements\}} para vectores literales; para \src{new T[n]}, el lowering genera un bucle que invoca \src{VectorPush} para cada posición.
+    \item \textbf{Runtime:} \src{HulkVector} con capacidad dinámica. La estructura mantiene longitud, capacidad y cursor de iteración. Los elementos se almacenan como \src{int64\_t}, lo que permite representar tanto enteros y doubles (mediante reinterpretación de bits) como punteros a objetos.
+\end{itemize}
+
+\subsubsection{Por qué mejora el sistema}
+
+Los arreglos son la estructura de datos más básica en cualquier lenguaje de propósito general. Sin ellos, implementar sumas de secuencias, búsqueda, ordenación o cualquier algoritmo que requiera memoria indexada es imposible. El inicializador funcional (\src{\{ i -> expr \}}) es especialmente valioso porque permite crear arreglos con valores calculados en una sola expresión, sin necesidad de bucles explícitos de inicialización.
+
+% ---
+\subsection{Extensión 4: generadores e iterables de usuario}
+
+\subsubsection{Motivación}
+
+El protocolo \src{Iterable} de \hulk{} permite que los usuarios definan fuentes de datos perezosas (lazy), que producen elementos uno a uno bajo demanda. Esto es más expresivo que los arreglos: un generador puede ser infinito, o puede producir elementos calculados sin almacenarlos todos en memoria.
+
+\begin{lstlisting}[language=HULK,caption={Generador de números pares como tipo usuario}]
+type Evens(limit: Number) {
+    current_val: Number = -2;
+    max_val: Number = limit;
+
+    next(): Boolean {
+        self.current_val := self.current_val + 2;
+        self.current_val <= self.max_val;
+    }
+
+    current(): Number { self.current_val; }
+}
+
+let sum = 0 in {
+    for (x in new Evens(10)) {
+        sum := sum + x;
+    };
+    if (sum == 30) print("ok") else print("fail");
+};
+\end{lstlisting}
+
+\subsubsection{Cómo se implementó}
+
+\begin{itemize}
+    \item \textbf{TypeRegistry:} valida que un tipo con anotación \src{T*} en parámetros o variables implemente los métodos \src{next(): Boolean} y \src{current(): Object} (o un subtipo de \src{Object}).
+    \item \textbf{HIR:} el nodo \src{HirExprKind::For} contiene el tipo del iterable como \src{HirParam}; el \src{DispatchKind} de las llamadas a \src{next()} y \src{current()} es \src{Virtual}, lo que permite que cualquier tipo conforme funcione.
+    \item \textbf{Lowering:} un \src{for (x in gen)} se baja a un bucle con \src{VirtualCall} a \src{next()} (resultado booleano), un \src{Branch} de salida si el resultado es falso, y un \src{VirtualCall} a \src{current()} para obtener el valor de cada iteración.
+    \item \textbf{Builtin \src{range}:} se implementa en el runtime como \src{HulkRange}. La función \src{hulk\_range(start, end)} asigna un \src{HulkRange} con vtable propia, cuyos slots 0 y 1 apuntan a \src{hulk\_range\_next} y \src{hulk\_range\_current}. Así, \src{range} es simplemente otro iterable, sin tratamiento especial en el compilador.
+\end{itemize}
+
+\subsubsection{Por qué mejora el sistema}
+
+El patrón de generador desacopla la lógica de producción de datos de la lógica de consumo. Un \src{for} sobre un iterable funciona igualmente con un \src{range} builtin, con un \src{HulkVector}, o con cualquier tipo de usuario que implemente el protocolo. Esto hace que el \src{for} sea verdaderamente polimórfico y extensible: un usuario puede escribir un generador de Fibonacci, un generador de permutaciones, un cursor de base de datos, y todos funcionan con la misma sintaxis de \src{for}.
+
+% ---
+\subsection{Extensión 5: lambdas, closures y funciones de orden superior}
+
+\subsubsection{Motivación}
+
+Las funciones de primera clase permiten pasar comportamiento como dato. Sin lambdas, implementar funciones como \src{map}, \src{filter} o \src{reduce} requeriría crear un tipo de objeto para cada operación. Con lambdas, la abstracción es directa y el código es más conciso.
+
+\begin{lstlisting}[language=HULK,caption={Lambda como argumento y clausura sobre el entorno léxico}]
+// Clausura: captura 'base' del entorno externo
+let base: Number = 10 in
+let add_base: (Number) -> Number = function (x: Number): Number -> x + base in {
+    if (add_base(5) == 15) print("ok") else print("fail");
+};
+
+// Funcion de orden superior
+function map_range(lo: Number, hi: Number, f: (Number) -> Number): Number {
+    let sum = 0 in {
+        for (i in range(lo, hi)) { sum := sum + f(i); };
+        sum;
+    };
+}
+
+if (map_range(1, 4, function (x: Number): Number -> x * x) == 14) print("ok") else print("fail");
+
+// Currying: retornar una lambda desde una funcion
+function make_adder(n: Number): (Number) -> Number {
+    function (x: Number): Number -> x + n;
+}
+
+let add5 = make_adder(5) in
+    if (add5(3) == 8) print("ok") else print("fail");
+\end{lstlisting}
+
+\subsubsection{Cómo se implementó}
+
+La implementación de lambdas es uno de los procesos más complejos del compilador porque involucra análisis de captura, generación de código fuera del flujo normal y representación de closures en memoria.
+
+\begin{itemize}
+    \item \textbf{Pratt parser:} la función \src{is\_lambda\_start()} hace un scan sin consumir tokens para detectar si la expresión entre paréntesis forma una lista de parámetros seguida de \src{=>} (lambda short-form) o de \src{function(params) -> body} (long-form). Esto es necesario porque \src{(x + 1)} y \src{(x: Number) => x + 1} empiezan igual pero son construcciones completamente distintas.
+    \item \textbf{HIR:} \src{HirExprKind::Lambda} con parámetros tipados, tipo de retorno resuelto y cuerpo HIR.
+    \item \textbf{Lowering:} al encontrar una lambda, el lowering (a) identifica las variables del entorno que se usan en el cuerpo y no son parámetros de la lambda (capturas), (b) genera una función IR separada de kind \src{Lambda} que recibe la closure como contexto implícito, (c) reemplaza los accesos a variables capturadas por instrucciones \src{GetCapture\{idx, ty\}}, y (d) en el sitio de creación emite \src{MakeClosure\{function, captures\}} con los valores actuales de las variables capturadas.
+    \item \textbf{Runtime:} \src{HulkClosure} con puntero a función y arreglo flexible de capturas. El backend emite \src{hulk\_closure\_alloc(fn\_ptr, num\_captures)} y una llamada a \src{hulk\_closure\_set\_capture} por cada variable capturada.
+\end{itemize}
+
+\subsubsection{Por qué mejora el sistema}
+
+Las lambdas transforman a \hulk{} en un lenguaje que puede expresar patrones de programación funcional. La combinación de \src{for} sobre iterables y funciones de orden superior permite escribir transformaciones de datos expresivas. El patrón \src{make\_adder} (función que retorna una lambda que captura un parámetro del entorno) es la base de la programación en estilo currying, lo que mejora significativamente la expresividad del lenguaje.
+
+% ---
+\subsection{Extensión 6: \src{define} como definición de expresión única}
+
+\subsubsection{Motivación}
+
+En \hulk{} extendido, \src{define} introduce una función cuyo cuerpo es una sola expresión, sin necesidad de llaves. Es el equivalente a una \textit{expression-bodied function} o una definición de macro de sustitución directa. Para el usuario, \src{define} comunica que la función es simple, pura y preferiblemente sin efectos secundarios.
+
+\begin{lstlisting}[language=HULK,caption={Equivalencia entre define y function}]
+define double(x: Number): Number -> x * 2;
+
+function double_fn(x: Number): Number { x * 2; }
+
+if (double(5) == 10) print("ok") else print("fail");
+if (double_fn(5) == 10) print("ok") else print("fail");
+// ambas producen el mismo resultado
+\end{lstlisting}
+
+\subsubsection{Cómo se implementó}
+
+\begin{itemize}
+    \item \textbf{Lexer:} se añade \src{define} como palabra clave reservada.
+    \item \textbf{Parser:} una declaración que comienza con \src{define} sigue la misma gramática que \src{function} pero con \src{->} como separador en lugar de \src{=>}, y no acepta cuerpos con llaves.
+    \item \textbf{AST:} \src{FunctionDecl} con el campo \src{is\_macro: bool} en \src{true}.
+    \item \textbf{Semántica:} el \src{HirBuilder} procesa las declaraciones \src{define} de la misma manera que las funciones, con la misma inferencia de tipos. La distinción queda en el campo \src{is\_macro} por si el backend o un optimizador futuro quieren tratarlas de forma diferente (e.g., inlining automático).
+\end{itemize}
+
+Los 8 tests de la categoría \src{macros} cubren: definición simple, encadenamiento de múltiples \src{define}, condicionales dentro del cuerpo, higiene (que la variable del parámetro no escapa al ámbito externo), bucles dentro del cuerpo, \src{define} anidados y comparación directa con la versión \src{function} equivalente.
+
+\subsubsection{Por qué mejora el sistema}
+
+\src{define} es un marcador de intención. Ayuda al lector del código a distinguir rápidamente funciones de una expresión (preferiblemente puras) de funciones con cuerpos complejos de varias instrucciones. También abre la puerta a una optimización futura: si el compilador sabe que una función es una \src{define}, puede hacer inlining agresivo con mayor confianza de que no habrá efectos secundarios inesperados.
+
+% ---
+\subsection{Extensión 7: \src{for} sobre iterables y el builtin \src{range}}
+
+\subsubsection{Motivación}
+
+El bucle \src{while} obliga al programador a gestionar manualmente la variable de iteración, el avance y la condición de parada. Esto es verboso y propenso a errores (off-by-one, olvido de incremento). El \src{for} sobre iterables abstrae completamente ese patrón y garantiza que el protocolo se respete.
+
+\begin{lstlisting}[language=HULK,caption={for sobre range como alternativa a while manual}]
+// Con while (verboso, propenso a errores off-by-one)
+let i = 0, sum = 0 in while (i < 5) {
+    sum := sum + i;
+    i := i + 1;
+};
+
+// Con for sobre range (declarativo, sin gestion manual)
+let sum = 0 in {
+    for (x in range(0, 5)) {
+        sum := sum + x;
+    };
+    if (sum == 10) print("ok") else print("fail");
+};
+\end{lstlisting}
+
+\subsubsection{Comportamiento de \src{range}}
+
+El builtin \src{range(lo, hi)} produce los valores \src{lo, lo+1, ..., hi-1} (extremo superior exclusivo). La prueba \src{range\_sum.hulk} confirma: \src{range(1, 6)} produce 5 elementos (1, 2, 3, 4, 5) con suma 15. Esto sigue la convención de Python/Rust, que es la más intuitiva para bucles de longitud conocida.
+
+\subsubsection{Cómo se implementó}
+
+\begin{itemize}
+    \item \textbf{Parser:} \src{for (var in expr) body} es una expresión completa en el Pratt parser, con la misma prioridad que \src{while}. El cuerpo puede ser cualquier expresión, incluyendo bloques.
+    \item \textbf{HIR:} \src{HirExprKind::For\{var, iterable, body\}} donde \src{var} incluye su \src{SymbolId} único.
+    \item \textbf{Lowering:} se genera el siguiente patrón IR:
+        \begin{enumerate}
+            \item llamada \src{VirtualCall} a \src{next()} del iterable en slot 0;
+            \item \src{Branch} sobre el resultado booleano;
+            \item si verdadero, \src{VirtualCall} a \src{current()} en slot 1, asignación a la variable del bucle, ejecución del cuerpo, salto a la comprobación;
+            \item si falso, salida del bucle.
+        \end{enumerate}
+    \item \textbf{Runtime:} \src{HulkRange} implementa \src{next()} y \src{current()} con vtable propia. La función \src{hulk\_range(start, end)} asigna la estructura y configura \src{current\_val = start - 1} para que el primer \src{next()} produzca exactamente \src{start}.
+\end{itemize}
+
+\subsubsection{Por qué mejora el sistema}
+
+El \src{for} unifica tres patrones de uso: iterar un rango numérico (con \src{range}), iterar un arreglo (con su vtable de iterable), e iterar cualquier generador de usuario. El usuario no necesita aprender ninguna API diferente para cada caso. Además, el cuerpo del \src{for} es una expresión, lo que es consistente con la filosofía de \hulk{} de que todo produce un valor.
+
+% ---
+\subsection{Extensión 8: visibilidad protegida de atributos en jerarquías de herencia}
+
+\subsubsection{Contexto: lo que dice la especificación}
+
+La especificación de \hulk{} (p.\,38) establece: \textit{``Attributes are always private... not even inheritors can access parent attributes directly.''}  Interpretada de forma estricta, esta regla implicaría que un tipo hijo no puede usar \src{self.attr} si \src{attr} fue declarado en el padre.
+
+Sin embargo, nuestro compilador implementa una semántica más permisiva dentro de la jerarquía de herencia, y lo hace de forma deliberada, con una lógica técnica precisa y con casos de prueba que lo validan. Esta sección documenta esa decisión: qué se hizo, cómo funciona en el código y por qué es una extensión que mejora el lenguaje.
+
+\subsubsection{Qué se implementó: visibilidad protegida}
+
+El modelo adoptado distingue dos tipos de acceso a atributos:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{Acceso interno a través de \src{self}} (dentro de un método propio o heredado): \textbf{permitido para toda la jerarquía}, incluyendo los atributos declarados en tipos padre.
+    \item \textbf{Acceso externo desde código ajeno a la jerarquía} (desde \src{main} o desde un tipo sin relación de herencia): \textbf{bloqueado} con error \src{AttributeIsPrivate}.
+\end{enumerate}
+
+Esto equivale exactamente a la semántica \src{protected} de Java o C++: el atributo no es público, pero sí es accesible para la clase que lo declara y para todas sus subclases.
+
+\subsubsection{Evidencia directa en los tests}
+
+Los siguientes casos de prueba ilustran exactamente esta distinción:
+
+\begin{lstlisting}[language=HULK,caption={method\_override.hulk: FancyPrinter accede a self.pfx declarado en Printer}]
+type Printer(prefix: String) {
+    pfx: String = prefix;
+    format(msg: String): String { self.pfx @ msg; }
+}
+
+type FancyPrinter(prefix: String, suffix: String) inherits Printer(prefix) {
+    sfx: String = suffix;
+    // FancyPrinter sobrescribe format() y accede a self.pfx (declarado en Printer)
+    format(msg: String): String { self.pfx @ msg @ self.sfx; }
+}
+
+let fp = new FancyPrinter(">> ", " <<") in
+    if (fp.format("hello") == ">> hello <<") print("ok") else print("fail");
+\end{lstlisting}
+
+\begin{lstlisting}[language=HULK,caption={interface\_inherit\_compat.hulk: Button accede a self.label declarado en Widget}]
+type Widget(label: String) {
+    label: String = label;
+    draw(): String { "widget:" @ self.label; }
+}
+
+type Button(label: String) inherits Widget(label) {
+    // Button sobrescribe draw() y accede a self.label (declarado en Widget)
+    draw(): String { "button:" @ self.label; }
+}
+\end{lstlisting}
+
+En ambos casos, el tipo hijo accede en su método overrideado a un atributo que fue declarado en el padre. Ambos tests están en la carpeta \src{tests/hulk/ok/}, lo que confirma que el compilador los acepta como programas válidos.
+
+Por contraste, el test de error \src{tests/hulk/errors/semantic/wrong\_field\_access.hulk} contiene acceso externo a un atributo de un tipo desde código no relacionado, y el compilador rechaza ese programa con \src{AttributeIsPrivate}.
+
+\subsubsection{Cómo funciona en el compilador: la lógica exacta}
+
+La clave está en dos puntos del código del \src{HirBuilder}.
+
+\textbf{Punto 1 — \src{lookup\_attribute} recorre toda la cadena de herencia.} La función en \src{hulk-sema/src/context.rs} (línea 349) está implementada así:
+
+\begin{lstlisting}[language=Rust,caption={lookup\_attribute recorre la cadena de herencia completa}]
+pub fn lookup_attribute(&self, type_name: &str, attr_name: &str) -> Option<Type> {
+    let mut current = Some(type_name);
+    while let Some(name) = current {
+        let Some(ti) = self.types.get(name) else { break };
+        if let Some(ty) = ti.attributes.get(attr_name) {
+            return Some(ty.clone());  // encontrado en este nivel o en un ancestro
+        }
+        current = ti.parent.as_deref();  // sube al padre
+    }
+    None  // no existe en la jerarquia
+}
+\end{lstlisting}
+
+Cuando se analiza \src{FancyPrinter.format()} y se encuentra \src{self.pfx}, el compilador llama \src{lookup\_attribute("FancyPrinter", "pfx")}. La función empieza en \src{FancyPrinter}, no encuentra \src{pfx} allí (solo tiene \src{sfx}), sube a \src{Printer}, encuentra \src{pfx} y retorna su tipo. El acceso es válido.
+
+\textbf{Punto 2 — La regla de privacidad solo bloquea accesos externos.} En \src{hir\_builder.rs} (línea 1653), \src{analyze\_member\_access} tiene dos ramas:
+
+\begin{lstlisting}[language=Rust,caption={Lógica de acceso: self vs externo}]
+if is_self {
+    // Acceso via self: se permite si el atributo existe en CUALQUIER nivel de
+    // la jerarquia (lookup_attribute sube hasta encontrarlo o agotar la cadena)
+    if let Some(attr_ty) = self.registry.lookup_attribute(&owner_type, member) {
+        return /* acceso valido */;
+    }
+    self.errors.push(SemanticError::AttributeIsPrivate { ... });
+} else {
+    // Acceso externo (obj.attr desde otro contexto)
+    // Solo se permite si obj tiene exactamente el mismo tipo que self.current_type
+    let same_class = self.current_type.as_deref()
+        .map(|ct| ct == type_name).unwrap_or(false);
+    if same_class {
+        if let Some(attr_ty) = self.registry.lookup_attribute(&type_name, member) {
+            return /* mismo tipo: permitido */;
+        }
+    }
+    self.errors.push(SemanticError::AttributeIsPrivate { ... });
+}
+\end{lstlisting}
+
+La distinción es precisa: \src{self.pfx} desde un método de \src{FancyPrinter} usa la rama de \src{self}, que busca en toda la jerarquía. Un acceso como \src{fp.pfx} desde el bloque principal usa la rama externa, que falla porque el contexto actual no es un método de \src{FancyPrinter}.
+
+El caso adicional de la rama externa (\src{same\_class}) permite también patrones como \src{other.x} dentro de un método de la misma clase: útil para comparaciones entre instancias del mismo tipo (como en \src{tests/hulk/ok/oop/vector\_math.hulk}, donde \src{dot(other: Vector)} accede a \src{other.x} dentro de un método de \src{Vector}).
+
+\subsubsection{Justificaciones de por qué esta extensión mejora el lenguaje}
+
+\paragraph{1. La herencia sin acceso a estado heredado es semánticamente incompleta.}
+
+Si un tipo hijo hereda todos los atributos del padre a nivel de memoria (lo cual es inevitable: el constructor del padre los inicializa y el hijo los posee físicamente en su layout de objeto), pero no puede leerlos ni modificarlos, entonces hereda estado invisible. El hijo puede invocar los métodos del padre mediante \src{base()}, pero si quiere \emph{extender} o \emph{especializar} esos métodos sin delegarlos completamente, no puede hacerlo sin duplicar el estado.
+
+En \src{method\_override.hulk}, el propósito de \src{FancyPrinter} es exactamente ese: extender el comportamiento de \src{Printer.format()} añadiendo un sufijo. Para eso necesita el prefijo del padre. Sin acceso a \src{self.pfx}, la única alternativa sería:
+
+\begin{lstlisting}[language=HULK,caption={Alternativa sin acceso protegido: duplicacion innecesaria de estado}]
+type FancyPrinter(prefix: String, suffix: String) inherits Printer(prefix) {
+    pfx_copy: String = prefix;  // duplicar el atributo del padre
+    sfx: String = suffix;
+    format(msg: String): String { self.pfx_copy @ msg @ self.sfx; }
+}
+\end{lstlisting}
+
+Esta alternativa es redundante y rompe la cohesión: \src{pfx\_copy} y \src{pfx} tienen el mismo valor pero son dos atributos distintos, ocupan más memoria, y si el padre llegara a modificar \src{pfx}, el hijo no vería el cambio.
+
+\paragraph{2. El layout de objetos ya incluye los atributos del padre.}
+
+En la IR de Hulk, el layout de \src{FancyPrinter} hereda los atributos del padre con sus \src{AttrId} originales. El atributo \src{pfx} de \src{Printer} tiene \src{AttrId \#0}; cuando el lowering genera código para \src{FancyPrinter}, ese atributo sigue siendo \src{AttrId \#0} en el objeto. En tiempo de ejecución, la memoria del objeto \src{FancyPrinter} contiene \src{pfx} en la misma posición que lo haría un objeto \src{Printer}. La restricción de visibilidad sería puramente artificial: el atributo está físicamente ahí y el índice es conocido en tiempo de compilación.
+
+Bloquear el acceso no daría ninguna garantía de seguridad adicional a nivel de memoria; solo agregaría una limitación de expresividad sin contrapartida técnica.
+
+\paragraph{3. La especificación probablemente protege de accesos externos, no internos.}
+
+La frase \textit{``not even inheritors''} en la especificación de \hulk{} aparece en el contexto de discutir la encapsulación frente a código externo. El espíritu de esa regla es evitar que cualquier código ajeno a la jerarquía lea o modifique el estado interno de un objeto. Nuestro compilador cumple ese espíritu: desde código externo (fuera de la jerarquía), ningún atributo es accesible. La extensión solo abre el acceso a los propios métodos del tipo y de sus subtipos, que conceptualmente son los más capacitados para operar sobre ese estado.
+
+Esta interpretación es la misma que adoptaron Java, C\#, C++, Kotlin y Swift con sus modificadores \src{protected}. La decisión de \hulk{} de no tener \src{protected} como palabra clave explícita no necesariamente implica que el acceso dentro de la jerarquía deba ser idéntico al acceso externo.
+
+\paragraph{4. Los overrides significativos requieren acceso al estado que se especializa.}
+
+El patrón de override más común en OOP es el de \emph{extensión}: un hijo agrega comportamiento a un método existente, conservando parte de la lógica del padre. En \hulk{} esto se puede hacer con \src{base()}, pero \src{base()} llama al método completo del padre. Si el hijo quiere cambiar cómo se usa el estado del padre en el método (no solo añadir algo antes o después), \src{base()} no es suficiente.
+
+En \src{FancyPrinter.format()}, el hijo no quiere llamar a \src{base()(msg)} y luego añadir algo; quiere construir una cadena completamente diferente que incorpore \src{self.pfx} en una posición diferente. Ese patrón requiere acceso directo al atributo.
+
+\paragraph{5. El acceso mismo-clase (cross-instance) habilita patrones algebráicos.}
+
+La rama \src{same\_class} del compilador permite además que un método acceda a los atributos de \emph{otro objeto del mismo tipo} (no solo de \src{self}). Esto es necesario para patrones como el producto escalar:
+
+\begin{lstlisting}[language=HULK,caption={vector\_math.hulk: acceso cross-instance al mismo tipo}]
+type Vector(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+    dot(other: Vector): Number { self.x * other.x + self.y * other.y; }
+}
+\end{lstlisting}
+
+Sin acceso \src{other.x} y \src{other.y}, implementar el producto escalar, la suma de vectores o cualquier operación binaria sobre instancias del mismo tipo requeriría exponer getters públicos, lo que es más verboso y menos eficiente (una llamada de método por cada acceso en lugar de un acceso directo a memoria).
+
+\paragraph{6. La privacidad total sin excepciones hace la herencia más costosa que la composición.}
+
+Si los atributos del padre son estrictamente inaccesibles para el hijo, la herencia pierde una de sus ventajas principales: reutilizar y especializar estado. El hijo puede reutilizar los métodos del padre (via \src{base()} o herencia directa), pero para trabajar con el estado hereda tiene que ir a través de la interfaz de métodos del padre, que puede ser más limitada que el acceso directo. Esto hace que en muchos casos sea preferible la composición (tener un atributo del tipo padre en lugar de heredar), lo cual va en contra de los patrones de diseño orientados a objetos que la herencia en \hulk{} busca habilitar.
+
+\subsubsection{Regla final aplicada por el compilador}
+
+La regla que implementamos se puede enunciar de forma precisa:
+
+\begin{itemize}
+    \item \textbf{Acceso desde \src{self} dentro de un método:} se permite el acceso a cualquier atributo existente en el tipo actual o en cualquiera de sus ancestros. Esto incluye los atributos declarados en el padre.
+    \item \textbf{Acceso sobre otra instancia del mismo tipo} (\src{other.attr} dentro de un método donde \src{other: MismoTipo}): se permite si el atributo existe en ese tipo o en sus ancestros.
+    \item \textbf{Acceso externo} (desde código fuera de la jerarquía, o sobre un objeto de tipo diferente): bloqueado con error diagnóstico \src{AttributeIsPrivate}.
+\end{itemize}
+
+Esta regla es más precisa, más permisiva dentro de la jerarquía y más restrictiva fuera de ella que la interpretación más literal de la especificación. La consideramos una extensión justificada que hace la herencia en \hulk{} semánticamente completa.
+
+% ---
+\subsection{Extensión 9: pattern matching}
+
+\subsubsection{Motivación}
+
+El despacho de tipos en \hulk{} sin pattern matching requiere encadenar expresiones \src{is}/\src{as}:
+
+\begin{lstlisting}[language=HULK,caption={Despacho de tipos sin pattern matching: verboso y propenso a errores}]
+let result =
+    if (s is Circle)
+        "circle: " @ (s as Circle).area()
+    elif (s is Rectangle)
+        "rect: " @ (s as Rectangle).area()
+    else
+        "other"
+in print(result);
+\end{lstlisting}
+
+Este patrón tiene varios problemas: el programador repite el nombre del tipo dos veces (\src{is Circle} y luego \src{as Circle}), el cast puede fallar en tiempo de ejecución si se comete un error de copia, y el compilador no puede verificar si todos los casos relevantes están cubiertos. Con muchos subtipos, el código se vuelve difícil de leer y mantener.
+
+El pattern matching resuelve los tres problemas: el tipo se nombra una sola vez, el narrowing es automático, y el compilador verifica la exhaustividad en tiempo de compilación.
+
+\subsubsection{Sintaxis}
+
+\begin{lstlisting}[language=HULK,caption={Sintaxis de match: scrutinee, patrones y cuerpos de brazo}]
+type Shape() { area(): Number => 0; }
+type Circle(r: Number) inherits Shape { area(): Number => 3 * r * r; }
+type Rectangle(w: Number, h: Number) inherits Shape { area(): Number => w * h; }
+
+let s: Shape = new Circle(5) in
+print(match (s) {
+    Circle as c    => "circle: " @ c.area(),
+    Rectangle as r => "rect: "   @ r.area(),
+    _              => "other"
+});
+// imprime: circle: 75
+\end{lstlisting}
+
+La estructura general es \src{match (expr) \{ patron => cuerpo, ... \}}. Cada brazo produce un valor; el resultado de la expresión \src{match} es el valor del brazo que se ejecute. Los tipos de todos los brazos se unifican (tipo común más derivado) para determinar el tipo de retorno de la expresión completa.
+
+\subsubsection{Tipos de patrones}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Patrón} & \textbf{Ejemplo} & \textbf{Comportamiento} \\
+\midrule
+Wildcard & \src{\_} & coincide con cualquier valor; no introduce variable \\
+Literal  & \src{42}, \src{"hi"}, \src{true} & coincide si el valor es exactamente igual al literal \\
+Binding  & \src{n} & coincide siempre; liga el escrutinio a \src{n} \\
+Tipo     & \src{Circle} & coincide si \src{scrutinee is Circle} \\
+Tipo + bind & \src{Circle as c} & coincide + estrecha el tipo: \src{c} tiene tipo \src{Circle} en el cuerpo \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+La disambiguación se hace en el parser: un identificador que comienza con mayúscula es un patrón de tipo (convención de \hulk{} para nombres de tipo); uno que comienza con minúscula es un patrón de binding; el token especial \src{\_} (WILDCARD) es el comodín.
+
+\subsubsection{Verificación de exhaustividad}
+
+El compilador exige que el último brazo sea un patrón que garantice cobertura total: \src{\_} (wildcard) o un binding. Si ningún brazo cumple esa condición, se emite el error \src{NonExhaustiveMatch} en tiempo de compilación:
+
+\begin{lstlisting}[language=HULK,caption={Match no exhaustivo: error de compilación}]
+match (s) { Circle => 1, Rectangle => 2 };
+// error: Non-exhaustive match: missing a wildcard or binding arm
+\end{lstlisting}
+
+Esto previene el caso de que el match llegue en tiempo de ejecución a un valor no contemplado, garantizando que siempre hay un brazo que se ejecuta.
+
+\subsubsection{Cómo se implementó}
+
+La implementación siguió una estrategia de \emph{desazucarado completo en el HIR builder}, de modo que las fases posteriores (IR, lowering, backend LLVM) no requirieron ningún cambio.
+
+\begin{itemize}
+    \item \textbf{Lexer:} se añadió el token \src{MATCH} y el token \src{WILDCARD} (\src{\_}) al lexer de \hulk{}.
+    \item \textbf{Gramática LL(1):} se añadió la producción \src{OperatorExpr -> MATCH ;} en los tres archivos de gramática (\src{hulk\_control.gx}, \src{hulk\_types.gx}, \src{hulk\_full.gx}). Esta producción actúa como punto de entrada al Pratt parser cuando el lookahead es \src{MATCH}.
+    \item \textbf{Pratt parser:} se añadieron los campos \src{match\_kw} y \src{wildcard} a \src{PrattConfig} y los métodos \src{parse\_match\_subexpr} y \src{parse\_match\_pattern} al runtime del Pratt parser. El resultado es un nodo CST \src{MatchExpr} con hijos \src{Expr} (escrutinio) y \src{MatchArm*} (pares patrón/cuerpo).
+    \item \textbf{AST:} se añadió la variante \src{Expr::Match \{ scrutinee, arms \}} y los tipos \src{MatchArm}, \src{Pattern} (con variantes \src{Wildcard}, \src{Literal(LiteralPattern)}, \src{Binding(String)}, \src{TypePattern \{ name, bind \}}) al módulo \src{hulk-frontend}.
+    \item \textbf{Resolver:} \src{Expr::Match} introduce los bindings de cada brazo en un scope propio: un patrón de binding define una variable igual al escrutinio; un patrón de tipo con \src{as} define una variable del tipo estrechado.
+    \item \textbf{Type checker:} infiere el tipo del escrutinio, verifica que el tipo indicado en patrones de tipo exista en el registro, y determina el tipo de retorno del match como el tipo común de todos los cuerpos mediante \src{unify\_types} (LCA en la jerarquía de herencia).
+    \item \textbf{HIR builder:} desazucara \src{Expr::Match} en:
+    \begin{enumerate}
+        \item Una variable sintética \src{\_match\_scr\_N} ligada al escrutinio mediante \src{HirExprKind::Let}.
+        \item Una cadena de condicionales \src{HirExprKind::If}: la condición de cada brazo de tipo es un \src{HirExprKind::TypeTest}; la de un brazo literal es una igualdad \src{HirExprKind::Binary\{op: Eq\}}; el brazo wildcard o binding cierra la cadena como la rama \src{else}.
+        \item El binding de tipo (\src{as varname}) se desazucara a un \src{HirExprKind::Let} adicional que contiene un \src{HirExprKind::TypeCast}.
+    \end{enumerate}
+\end{itemize}
+
+El resultado es que la IR, el lowering y el backend LLVM procesan el match como si fuera una expresión \src{let}/\src{if} ordinaria, sin necesidad de conocer el concepto de ``match''.
+
+\subsubsection{Por qué mejora el sistema}
+
+El pattern matching aporta tres mejoras concretas al lenguaje:
+
+\paragraph{1. Seguridad en el despacho de tipos.} El cast implícito en el brazo \src{Circle as c} está garantizado: si el brazo se ejecuta, el escrutinio es de tipo \src{Circle}. No hay posibilidad de un cast incorrecto. En el enfoque con \src{is}/\src{as} el programador puede escribir \src{is Circle} pero luego hacer \src{as Rectangle} por error tipográfico; el compilador no lo detectaría hasta el análisis semántico posterior, y algunos compiladores no lo detectarían en absoluto.
+
+\paragraph{2. Exhaustividad verificada en compilación.} La obligación de un brazo final wildcard o binding transforma un error de runtime (valor no contemplado $\to$ comportamiento indefinido) en un error de compilación. El programa que llega a ejecutarse tiene cobertura total garantizada.
+
+\paragraph{3. Expresividad y legibilidad.} Un match sobre cinco subtipos ocupa cinco líneas limpias en lugar de cinco bloques \src{if}/\src{elif} con cuatro referencias al tipo cada uno. El código que usa pattern matching es más fácil de leer, de extender (añadir un brazo) y de revisar en una pull request.
+
+Desde el punto de vista del compilador, la implementación demostró la robustez del diseño por capas: una extensión de lenguaje significativa (con su propio análisis, representación y semántica) se integró completamente en las fases de frontend y semántica sin afectar en absoluto al backend.
+
+% ============================================================
+\section{Comparación con la planificación inicial}
+
+\begin{longtable}{p{3.4cm}p{5.0cm}p{5.8cm}}
+\toprule
+\textbf{Fase} & \textbf{Estado alcanzado} & \textbf{Comentario} \\
+\midrule
+Lexer y parser & Completos & Generadores propios, LL(1) + Pratt parser. \\
+AST & Amplio & Todos los constructos de \hulk{} incluyendo extensiones. \\
+Semántica & Avanzada & Inferencia iterativa, protocolos, scopes, HIR tipada. \\
+IR y lowering & Avanzados & Cubre más de lo que el backend puede ejecutar completamente. \\
+Runtime/ejecución & Parcial funcional & LLVM + runtime C; no VM propia. \\
+Extensiones & Varias visibles & Protocolos, arreglos/vectores, lambdas/closures. \\
+Documentación & Este documento & Informe técnico del equipo. \\
+\bottomrule
+\end{longtable}
+
+La diferencia más relevante respecto a la planificación: en lugar de implementar una VM propia como camino principal, el proyecto adoptó LLVM IR + runtime C. Esta decisión fue coherente con la orientación del proyecto y aceleró la llegada a un compilador ejecutable.
+
+% ============================================================
+\section{Limitaciones}
+
+\subsection{Runtime sin recolector de basura}
+
+El runtime usa un arena bump-allocator de 64\,MB. La memoria asignada con \src{hulk\_alloc\_object}, \src{hulk\_vector\_new} y \src{hulk\_closure\_alloc} no se libera individualmente; toda la arena se descarta al terminar el proceso. Para una entrega académica con programas cortos esto es aceptable, pero no sería válido para un sistema de producción de larga duración.
+
+Los elementos de vector se representan como \src{int64\_t}, lo que requiere conversiones bit a bit para doubles y punteros. El acceso por índice fuera de rango es detectado en runtime y aborta con mensaje diagnóstico.
+
+\subsection{Cobertura del backend}
+
+El backend LLVM tiene cobertura completa para tipos primitivos, strings, funciones globales, recursión, ciclos, OOP con herencia, protocolos con despacho virtual, vectores indexados, rangos, lambdas y closures simples. Las closures que capturan values no-puntero (doubles almacenados directamente, no como objeto) requieren una coerción extra que está implementada pero puede generar comportamiento incorrecto en casos de captura de valores numéricos mutados después de la creación de la closure.
+
+\subsection{Macros}
+
+El sistema de \src{define} no es un sistema de macros higiénicas completo. No debe presentarse como tal en la defensa.
+
+% ============================================================
+\section{Instrucciones de uso}
+
+\subsection{Compilación del proyecto}
+
+\begin{lstlisting}[caption={Construcción del compilador}]
+make build
+# equivale a:
+cargo build --release -p hulk-driver
+cp target/release/hulkc ./hulk
+\end{lstlisting}
+
+\subsection{Uso del compilador}
+
+\begin{lstlisting}[caption={Modos de uso del driver}]
+./hulk programa.hulk          # compila a ./output (requiere clang)
+./output                      # ejecuta el binario
+./hulk programa.hulk --ast    # imprime el AST
+./hulk programa.hulk --check  # ejecuta el chequeo semántico
+./hulk programa.hulk --hir    # imprime la HIR tipada
+./hulk programa.hulk --ir     # imprime la Hulk IR
+./hulk programa.hulk --emit-llvm  # imprime el LLVM IR generado
+\end{lstlisting}
+
+\subsection{Requisitos}
+
+\begin{itemize}
+    \item Rust estable (1.70+) con Cargo
+    \item clang (versión 14 a 18 soportada; la detección automática de versión maneja la flag \src{-opaque-pointers})
+    \item libm (incluida en sistemas Linux/macOS)
+\end{itemize}
+
+% ============================================================
+\section{Conclusiones}
+
+El compilador desarrollado presenta una arquitectura sólida y modular para un proyecto académico de compilación. La separación en ocho crates Rust, el uso de generadores propios de lexer y parser, el Pratt parser para expresiones, la HIR tipada como contrato entre fases, la IR propia con un conjunto de instrucciones completo, y el backend LLVM con ABI explícito con el runtime muestran una comprensión clara del diseño de un compilador moderno.
+
+Las decisiones técnicas más relevantes del equipo fueron: usar \src{LexerSpec} declarativa en lugar de un lexer manual; combinar LL(1) con Pratt para el parser; implementar inferencia iterativa en la semántica; diseñar tipos fuertes para todos los identificadores de IR; separar \src{IrValue} de \src{IrPlace} para hacer ilegales las asignaciones inválidas; e incluir \src{capture\_types} en \src{IrTypeRef::Functor} para contratos correctos con el backend.
+
+Las limitaciones identificadas (runtime sin GC, backend con cobertura parcial, macros iniciales) son honestas y forman parte de una arquitectura incremental en la que las fronteras de completitud están bien identificadas. El mayor valor técnico está en la claridad del pipeline y en los contratos internos entre AST, HIR, IR, LLVM y runtime.
+
+% ============================================================
+\appendix
+\section{Checklist final de entrega}
+
+\begin{longtable}{p{8cm}p{3cm}p{3cm}}
+\toprule
+\textbf{Elemento} & \textbf{Estado} & \textbf{Prioridad} \\
+\midrule
+\src{cargo test --workspace --all-targets --locked} pasa & Cumplido & Alta \\
+CI de GitHub Actions pasa & Cumplido & Alta \\
+Driver compila a \src{./output} con ejemplos básicos & Cumplido & Alta \\
+Dumps de AST, HIR, IR y LLVM funcionan & Cumplido & Alta \\
+Documentar subconjunto ejecutable real & Este informe & Alta \\
+Builtins matemáticos extendidos (abs, floor, ceil, round, min, max) & Cumplido & Media \\
+Métodos de String (length/size, substring) & Cumplido & Media \\
+Ubicación en errores semánticos (UndefinedVariable/Function/Method) & Cumplido & Media \\
+Guards de división/módulo por cero & Cumplido & Alta \\
+Comprobación de bounds en vectores & Cumplido & Media \\
+Comprobación de nulos en métodos y atributos & Cumplido & Media \\
+README con comandos de uso y ejemplos & Cumplido & Baja \\
+Pattern matching (\src{match}/\src{\_}) & Cumplido & Media \\
+Estrategia de memoria / garbage collector & Futuro & Baja \\
+\bottomrule
+\end{longtable}
+
+\section{Programa demostrativo sugerido}
+
+\begin{lstlisting}[language=HULK,caption={Programa que recorre el pipeline completo sin usar partes frágiles}]
+function square(x: Number): Number => x * x;
+
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    norm2(): Number => square(self.x) + square(self.y);
+}
+
+type Circle(cx: Number, cy: Number, r: Number) inherits Point(cx, cy) {
+    r: Number = r;
+
+    area(): Number => PI * square(self.r);
+}
+
+let p = new Point(3, 4) in {
+    print("norm2:");
+    print(p.norm2());
+};
+
+let c = new Circle(0, 0, 5) in {
+    print("area:");
+    print(c.area());
+};
+\end{lstlisting}
+
+Este programa ejercita: funciones globales, tipos, atributos, métodos con \src{self}, herencia simple, construcción de objetos, llamadas a métodos, strings, números y el builtin \src{PI}.
+
+\end{document}

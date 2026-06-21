@@ -192,7 +192,26 @@ fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
     let result = (|| -> Result<String, String> {
         fs::write(&llvm_path, llvm).map_err(|err| format!("failed to write LLVM IR: {err}"))?;
 
-        let compile = Command::new("clang")
+        let needs_opaque_flag = Command::new("clang")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                s.split_whitespace()
+                    .skip_while(|t| *t != "version")
+                    .nth(1)
+                    .and_then(|v| v.split('.').next())
+                    .and_then(|maj| maj.parse::<u32>().ok())
+            })
+            .map(|maj| maj < 16)
+            .unwrap_or(false);
+
+        let mut clang_cmd = Command::new("clang");
+        if needs_opaque_flag {
+            clang_cmd.arg("-mllvm").arg("-opaque-pointers");
+        }
+        let compile = clang_cmd
             .arg(&llvm_path)
             .arg(&runtime_path)
             .arg("-lm")

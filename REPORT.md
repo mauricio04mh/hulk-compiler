@@ -147,7 +147,15 @@ A pre-pass collects all declaration names before resolving bodies, allowing forw
 
 Detected semantic errors include: undeclared identifiers, duplicate declarations, wrong argument count, invalid assignment targets, type mismatches in return types and assignments, use of `self` outside a class context, circular inheritance, inheriting from undefined types, and using non-iterable values in `for` loops.
 
-Semantic errors are reported with exit code `3` as `(line,col) SEMANTIC: description`.
+The three most user-visible error variants — `UndefinedVariable`, `UndefinedFunction`, and `UndefinedMethod` — carry a `Span { line, col }` sourced from the AST node that triggered the error. When a non-zero span is available the error message appends `at line L:C`, e.g.:
+
+```
+SEMANTIC error: Undefined variable 'x' at line 3:9
+SEMANTIC error: Undefined function 'foo' at line 7:1
+SEMANTIC error: Undefined method 'bar' for type 'MyType' at line 12:5
+```
+
+Semantic errors are reported with exit code `3` as `SEMANTIC error: description`.
 
 ### Protocol Conformance
 
@@ -232,7 +240,25 @@ For iterable receivers (ranges, vectors, user generators), a dedicated dispatch 
 
 String operations delegate to runtime functions (`hulk_string_concat`, `hulk_string_equals`, `hulk_string_from_number`, `hulk_string_from_bool`). The `print` builtin dispatches based on argument type: `hulk_print_number`, `hulk_print_bool`, `hulk_print_string`.
 
-Math builtins (`sqrt`, `sin`, `cos`, `exp`, `log`, `pow`, `rand`) wrap the corresponding C standard library functions.
+Math builtins wrap C standard library or runtime implementations:
+
+| HULK builtin | Arity | Runtime function |
+|---|---|---|
+| `sqrt` | 1 | `hulk_sqrt` |
+| `sin` | 1 | `hulk_sin` |
+| `cos` | 1 | `hulk_cos` |
+| `exp` | 1 | `hulk_exp` |
+| `log` | 2 | `hulk_log` |
+| `pow` | 2 | `hulk_pow` |
+| `rand` | 0 | `hulk_rand` |
+| `abs` | 1 | `hulk_abs` |
+| `floor` | 1 | `hulk_floor` |
+| `ceil` | 1 | `hulk_ceil` |
+| `round` | 1 | `hulk_round` |
+| `min` | 2 | `hulk_min` |
+| `max` | 2 | `hulk_max` |
+
+String method calls on a `String`-typed receiver are routed to dedicated runtime functions: `length()`/`size()` call `hulk_string_len` (result is converted from `i64` to `double`); `substring(start, end)` converts its `Number` arguments to `i64` and calls `hulk_string_sub`.
 
 ---
 
@@ -247,6 +273,20 @@ Key design decisions:
 - **Vectors as iterables**: `HulkVector` has a vtable with `next` at slot 0 and `current` at slot 1, so vectors can be used in any `for` loop accepting an iterable.
 - **Ranges as iterables**: `HulkRange` follows the same pattern, representing a floating-point sequence.
 - **Closures with flexible array member**: `HulkClosure` uses a C99 flexible array member for the capture array to avoid a double-indirection.
+- **Arena allocator**: All heap allocations go through a 64 MB bump-pointer arena (`hulk_arena_alloc`), eliminating fragmentation and `free` overhead for compiler test programs.
+
+### Runtime Safety Checks
+
+The runtime performs the following safety checks at runtime and aborts with a diagnostic message on violation:
+
+- **Division and modulo by zero**: The codegen emits an `fcmp oeq double divisor, 0.0` guard before every `/` and `%` operation. A branch to an error block calls `hulk_abort("division by zero")` before the division executes.
+- **Null object method call**: `hulk_object_method` checks that the receiver pointer is non-null before loading the vtable. A null receiver prints `"hulk runtime error: method call on null object"` and exits.
+- **VTable slot bounds**: `hulk_object_method` also validates that the requested slot is within `[0, method_count)`. An out-of-range slot reports the slot number and method count.
+- **Null dereference on attribute access**: All eight typed attribute accessors (`hulk_object_get_number`, `hulk_object_set_string`, etc.) call `check_obj_not_null` before the field offset arithmetic.
+- **Type cast failure**: `hulk_object_as` verifies the object is not null before calling `hulk_object_is`; an invalid cast returns null rather than silently misinterpreting memory.
+- **Vector index out of bounds**: `hulk_vector_get` and `hulk_vector_set` reject negative indices and indices ≥ `len`, printing the index and vector length before aborting.
+
+All fatal errors are reported to stderr via `hulk_abort(const char* msg)` and exit with code 1.
 
 ---
 
@@ -272,9 +312,126 @@ The compiler fully supports the following HULK language features:
 
 **Lambdas and closures**: anonymous function expressions, first-class functor values, closure capture of free variables, higher-order functions
 
-**String operations**: concatenation, equality, automatic conversion of numbers and booleans to strings for printing
+**String operations**: concatenation (`@`, `@@`), equality, automatic conversion of numbers and booleans to strings for printing, `length()`/`size()` (returns string length as `Number`), `substring(start, end)` (returns a new string slice)
 
-**Builtins**: `print`, `sqrt`, `sin`, `cos`, `exp`, `log`, `pow`, `rand`, `range`, `PI`, `E`
+**Builtins**: `print`, `sqrt`, `sin`, `cos`, `exp`, `log`, `pow`, `rand`, `range`, `PI`, `E`, `abs`, `floor`, `ceil`, `round`, `min`, `max`
+
+**Pattern matching** *(additional feature)*: `match (expr) { pattern => body, ... }` with wildcard (`_`), literal (`42`, `"s"`, `true`/`false`), binding (`n`), type-pattern (`TypeName`), and type-pattern-with-narrowing (`TypeName as x`) arms. Exhaustiveness checking at compile time ensures every `match` has a catch-all arm. See the dedicated section above for full details.
+
+---
+
+## Additional Feature: Pattern Matching
+
+Pattern matching was implemented as the compiler's additional language feature — a construct not present in the HULK specification but common in modern functional and hybrid languages (Rust, Swift, Kotlin, Scala, OCaml, Haskell). It extends HULK with a `match` expression that dispatches on the *shape* or *identity* of a value, making polymorphic code considerably more readable and safer than nested `if`/`elif`/`else` chains.
+
+### Why pattern matching fits HULK
+
+HULK already has a rich type hierarchy with single inheritance, protocols, `is` type tests, and `as` type casts. In practice, code that works with heterogeneous object graphs — a Shape that might be a Circle, Rectangle, or Triangle; an AST node that might be a Literal, BinaryExpr, or LetExpr — needs to dispatch on the concrete type at runtime. Before pattern matching, the idiomatic way to write this in HULK was:
+
+```hulk
+if (s is Circle) {
+    let c = s as Circle in c.area()
+} elif (s is Rectangle) {
+    let r = s as Rectangle in r.area()
+} else {
+    0
+};
+```
+
+This pattern is verbose, error-prone (the `as` cast must be repeated manually after the `is` test), and offers no compiler feedback if a case is forgotten. Pattern matching addresses all three problems.
+
+### Syntax
+
+```
+match (scrutinee) {
+    PatternA            => body_a,
+    PatternB as x       => body_b,
+    42                  => body_c,
+    _                   => body_default,
+}
+```
+
+The `match` expression evaluates `scrutinee` exactly once and tests each arm from top to bottom. The first arm whose pattern matches determines the result. The overall type of the `match` expression is the least common ancestor of all arm body types.
+
+### Pattern kinds
+
+| Pattern | Syntax | Matches when |
+|---|---|---|
+| **Wildcard** | `_` | always; no binding |
+| **Literal** | `42`, `"hello"`, `true` | scrutinee equals the literal value |
+| **Binding** | `n` (lowercase identifier) | always; binds the scrutinee to `n` in the arm body |
+| **Type pattern** | `Circle` (uppercase identifier) | `scrutinee is Circle` at runtime |
+| **Type pattern with bind** | `Circle as c` | same as above; additionally narrows `c: Circle` in the arm body, giving access to `Circle`-specific methods without an explicit cast |
+
+### Exhaustiveness checking
+
+The compiler requires that the last arm of every match is either a wildcard (`_`) or a binding pattern. If it is not, a semantic error `NonExhaustiveMatch` is emitted at compile time:
+
+```
+SEMANTIC error: Non-exhaustive match: missing a wildcard or binding arm for scrutinee of type 'Number'
+```
+
+This guarantees that every match expression has a defined result for all possible inputs, preventing silent `undefined`-style bugs that unguarded type dispatch can introduce.
+
+### Concrete example
+
+```hulk
+type Shape() {
+    area(): Number => 0;
+}
+type Circle(r: Number) inherits Shape {
+    area(): Number => 3 * r * r;
+}
+type Rectangle(w: Number, h: Number) inherits Shape {
+    area(): Number => w * h;
+}
+
+function describe(s: Shape): String =>
+    match (s) {
+        Circle as c   => "circle, area=" @ c.area(),
+        Rectangle as r => "rect, area=" @ r.area(),
+        _             => "unknown shape",
+    };
+```
+
+The compiler automatically narrows `c` to `Circle` and `r` to `Rectangle` inside their respective arms, so `c.area()` resolves to `Circle.area` at the type level and can be dispatched statically.
+
+### Implementation design
+
+**Desugaring strategy.** Rather than introducing new HIR, IR, lowering, or codegen nodes, `Expr::Match` is desugared directly to existing HIR constructs inside the HIR builder:
+
+1. The scrutinee is stored in a fresh synthetic variable `_match_scr_N` (impossible to name in user code, since HULK identifiers cannot start with `_`).
+2. Each conditional arm (TypePattern or Literal) becomes a `(condition, body)` pair in a `HirExprKind::If` branch vector.
+3. A TypePattern condition is `HirExprKind::TypeTest { expr: _scr, type_name }`.
+4. A TypePattern-with-bind body is wrapped in a `HirExprKind::Let` that casts the scrutinee: `let x: TypeName = _scr as TypeName in body`.
+5. A Literal condition is `HirExprKind::Binary { op: Eq, left: _scr, right: literal }`.
+6. The last wildcard or binding arm becomes the `else_branch` of the `HirExprKind::If`.
+
+Because `match` fully resolves to `Let` + `If` + `TypeTest` + `TypeCast` + `Binary` nodes — all of which the lowering and codegen already handle — the entire pass pipeline (`hulk-lower`, `hulk-ir`, `hulk-codegen-llvm`) required **zero changes**.
+
+**Parser integration.** The keyword `match` and the wildcard symbol `_` are added to all three lexer specs (`.lx` files). The grammar files (`.gx`) expose `OperatorExpr -> MATCH ;`, which causes the LL(1) table-driven parser to invoke the Pratt hook whenever it sees `MATCH` in expression position. The Pratt parser's `parse_match_subexpr` function then consumes `(scrutinee) { arms }` entirely.
+
+Pattern disambiguation inside `parse_match_pattern` follows a simple rule derived from HULK's own naming conventions: a token whose first character is uppercase is a TypePattern (since HULK type names are `TitleCase`); a lowercase-first identifier is a Binding; `_` (lexed as a distinct `WILDCARD` token) is a wildcard; and numeric, string, or boolean literals are literal patterns.
+
+**Scope hygiene.** Each arm body gets its own scope. Binding variables and type-pattern binds are defined in that scope only and do not leak to adjacent arms or the surrounding expression.
+
+**Interaction with type inference.** The result type of the whole match is computed by unifying all arm body types using the same `unify_types` (least common ancestor) function used for `if` branches. This means a match over type patterns whose arms return objects of different sibling types automatically produces the common parent type.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `crates/hulk-frontend/src/ast.rs` | New types: `LiteralPattern`, `Pattern`, `MatchArm`; new `Expr::Match` variant |
+| `crates/hulk-parsegen/testdata/specs/hulk_{control,types,full}.lx` | `keyword match MATCH`, `symbol "_" WILDCARD` |
+| `crates/hulk-parsegen/testdata/grammars/hulk_{control,types,full}.gx` | `OperatorExpr -> MATCH ;` |
+| `crates/hulk-parsegen/src/runtime/pratt.rs` | `match_kw`, `wildcard` fields in `PrattConfig`; `parse_match_subexpr`, `parse_match_pattern` |
+| `crates/hulk-frontend/src/lib.rs` | Wire `match_kw`, `wildcard` in `hulk_pratt_parser()` |
+| `crates/hulk-frontend/src/builder.rs` | `build_match_expr`, `build_match_arm`, `build_pattern` |
+| `crates/hulk-sema/src/resolver.rs` | `Expr::Match` arm; scope push/pop for arm bindings |
+| `crates/hulk-sema/src/checker.rs` | `Expr::Match` arm in `infer_expr`; scope management for arm bindings |
+| `crates/hulk-sema/src/hir_builder.rs` | `analyze_match`, `build_arm_cond_and_body`; `Expr::Match` in `substitute_expr` |
+| `crates/hulk-sema/src/error.rs` | `SemanticError::NonExhaustiveMatch` |
+| `crates/hulk-sema/tests/match_patterns.rs` | 12 unit tests covering all pattern kinds and exhaustiveness |
 
 ---
 
@@ -289,8 +446,6 @@ The compiler fully supports the following HULK language features:
 **No exception handling**: There is no `try`/`catch` mechanism. Runtime errors (bounds checks, type cast failures) call `exit(1)` through the C runtime.
 
 **No module system**: All declarations share a single global namespace. There are no imports or namespaces.
-
-**No pattern matching**: Destructuring and match expressions are not supported.
 
 **Closure capture by value**: Captured variables are copied at closure creation time. Modifications inside the lambda do not affect the outer scope.
 

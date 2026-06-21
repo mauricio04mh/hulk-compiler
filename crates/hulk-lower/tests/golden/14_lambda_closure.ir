@@ -7,10 +7,11 @@
 .CODE
 entry #0
 lambda lambda_0 #1 -> Number {
-  param %p0: Number name=x
+  param %p0: Object name=closure_self
+  param %p1: Number name=x
   temp %t0: Number
 
-  %t0 = %p0 + 1
+  %t0 = %p1 + 1
   return %t0
 }
 function entry #0 -> Number {

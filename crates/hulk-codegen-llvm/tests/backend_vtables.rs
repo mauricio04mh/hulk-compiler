@@ -178,7 +178,26 @@ fn compile_and_run_llvm(llvm: &str) -> Option<Result<String, String>> {
     let result = (|| -> Result<String, String> {
         fs::write(&llvm_path, llvm).map_err(|err| format!("failed to write LLVM IR: {err}"))?;
 
-        let compile = Command::new("clang")
+        let needs_opaque_flag = Command::new("clang")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                s.split_whitespace()
+                    .skip_while(|t| *t != "version")
+                    .nth(1)
+                    .and_then(|v| v.split('.').next())
+                    .and_then(|maj| maj.parse::<u32>().ok())
+            })
+            .map(|maj| maj < 16)
+            .unwrap_or(false);
+
+        let mut clang_cmd = Command::new("clang");
+        if needs_opaque_flag {
+            clang_cmd.arg("-mllvm").arg("-opaque-pointers");
+        }
+        let compile = clang_cmd
             .arg(&llvm_path)
             .arg(&runtime_path)
             .arg("-lm")
@@ -311,7 +330,7 @@ fn vtable_programs_emit_llvm() {
         let llvm = emit_llvm_from_source(case.source)
             .unwrap_or_else(|err| panic!("{} should emit LLVM: {err}", case.name));
         assert!(
-            llvm.contains("%HulkVTable = type { i64, ptr, i64, ptr }"),
+            llvm.contains("%HulkVTable = type { i64, ptr, i64, ptr, ptr }"),
             "{} should declare vtable type",
             case.name
         );
@@ -391,14 +410,20 @@ fn vtable_programs_execute_with_clang_when_available() {
 }
 
 #[test]
-fn unsupported_vector_still_fails_cleanly() {
-    let err = codegen_error_from_source("let v = [1, 2, 3] in print(v[0]);");
-    assert_unsupported_error(err, &["unsupported", "newvector", "vector"]);
+fn vector_literal_emits_llvm() {
+    // Vector literals and indexing are fully supported; verify IR is generated.
+    let llvm = emit_llvm_from_source("let v = [1, 2, 3] in print(v[0]);")
+        .expect("vector literal should emit LLVM");
+    assert!(llvm.contains("hulk_vector_new"), "should call hulk_vector_new");
+    assert!(llvm.contains("hulk_vector_push"), "should push elements");
+    assert!(llvm.contains("hulk_vector_get"), "should index into vector");
 }
 
 #[test]
-fn unsupported_closure_still_fails_cleanly() {
-    let err =
-        codegen_error_from_source("let f: (Number) -> Number = (x: Number) => x + 1 in f(4);");
-    assert_unsupported_error(err, &["unsupported", "closure"]);
+fn closure_emits_llvm() {
+    // Closures are fully supported; verify IR is generated.
+    let llvm =
+        emit_llvm_from_source("let f: (Number) -> Number = (x: Number) => x + 1 in f(4);")
+            .expect("closure should emit LLVM");
+    assert!(llvm.contains("hulk_closure_alloc"), "should allocate closure");
 }

@@ -132,6 +132,36 @@ const SUPPORTED_CASES: &[SupportedCase] = &[
         source: "{ print(\"a\" @ \"b\" @ \"c\"); }",
         expected_stdout: "abc\n",
     },
+    SupportedCase {
+        name: "vector literal and index",
+        source: "let v = [10, 20, 30] in print(v[1]);",
+        expected_stdout: "20\n",
+    },
+    SupportedCase {
+        name: "vector size",
+        source: "let v = [1, 2, 3] in print(v.size());",
+        expected_stdout: "3\n",
+    },
+    SupportedCase {
+        name: "for in range",
+        source: "for (x in range(1, 4)) print(x);",
+        expected_stdout: "1\n2\n3\n",
+    },
+    SupportedCase {
+        name: "for in vector literal",
+        source: "for (x in [10, 20, 30]) print(x);",
+        expected_stdout: "10\n20\n30\n",
+    },
+    SupportedCase {
+        name: "for accumulate sum",
+        source: "let s = 0 in { for (x in range(1, 6)) s := s + x; print(s); };",
+        expected_stdout: "15\n",
+    },
+    SupportedCase {
+        name: "print object shows type name",
+        source: "type Dog(name: String) { name: String = name; } print(new Dog(\"rex\"));",
+        expected_stdout: "<Dog>\n",
+    },
 ];
 
 fn lower_ir_from_source(source: &str) -> Result<IrProgram, Box<dyn Error>> {
@@ -251,6 +281,64 @@ fn codegen_error_from_source(source: &str) -> LlvmCodegenError {
     emit_llvm(&ir).expect_err("LLVM codegen should fail cleanly")
 }
 
+fn compile_and_run_llvm_expect_failure(llvm: &str) -> Option<Result<String, String>> {
+    if !clang_is_available() {
+        return None;
+    }
+    let temp_dir = match create_temp_dir("backend-runtime-err") {
+        Ok(path) => path,
+        Err(err) => return Some(Err(format!("failed to create temp dir: {err}"))),
+    };
+    let llvm_path = temp_dir.join("program.ll");
+    let bin_path = temp_dir.join("program");
+    let runtime_path = runtime_source_path();
+    let result = (|| -> Result<String, String> {
+        fs::write(&llvm_path, llvm).map_err(|err| format!("failed to write LLVM IR: {err}"))?;
+        let needs_opaque_flag = Command::new("clang")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                s.split_whitespace()
+                    .skip_while(|t| *t != "version")
+                    .nth(1)
+                    .and_then(|v| v.split('.').next())
+                    .and_then(|maj| maj.parse::<u32>().ok())
+            })
+            .map(|maj| maj < 16)
+            .unwrap_or(false);
+        let mut clang_cmd = Command::new("clang");
+        if needs_opaque_flag {
+            clang_cmd.arg("-mllvm").arg("-opaque-pointers");
+        }
+        let compile = clang_cmd
+            .arg(&llvm_path)
+            .arg(&runtime_path)
+            .arg("-lm")
+            .arg("-o")
+            .arg(&bin_path)
+            .output()
+            .map_err(|err| format!("failed to invoke clang: {err}"))?;
+        if !compile.status.success() {
+            return Err(format!(
+                "clang failed with status {}: {}",
+                compile.status,
+                String::from_utf8_lossy(&compile.stderr).trim()
+            ));
+        }
+        let run = Command::new(&bin_path).output()
+            .map_err(|err| format!("failed to run compiled program: {err}"))?;
+        if run.status.success() {
+            return Err("expected non-zero exit code (runtime error), but program exited successfully".to_string());
+        }
+        String::from_utf8(run.stderr)
+            .map_err(|err| format!("compiled program emitted invalid UTF-8 on stderr: {err}"))
+    })();
+    let _ = fs::remove_dir_all(&temp_dir);
+    Some(result)
+}
+
 fn assert_unsupported_error(err: LlvmCodegenError, keywords: &[&str]) {
     let rendered = err.to_string().to_lowercase();
     assert!(
@@ -308,7 +396,65 @@ fn supported_minimal_programs_execute_with_clang_when_available() {
 }
 
 #[test]
-fn unsupported_vector_fails_cleanly() {
-    let err = codegen_error_from_source("let v = [1, 2, 3] in print(v[0]);");
-    assert_unsupported_error(err, &["unsupported", "newvector", "vector"]);
+fn division_by_zero_emits_guard() {
+    let llvm = emit_llvm_from_source("print(1 / 0);")
+        .expect("division by zero should emit LLVM");
+    assert!(
+        llvm.contains("fcmp oeq double"),
+        "should emit a zero-check before fdiv"
+    );
+    assert!(
+        llvm.contains("@hulk_err_divzero"),
+        "should reference the division-by-zero error string"
+    );
+    assert!(
+        llvm.contains("@hulk_abort"),
+        "should call hulk_abort on zero divisor"
+    );
 }
+
+#[test]
+fn division_by_zero_aborts_at_runtime() {
+    let llvm = emit_llvm_from_source("print(1 / 0);")
+        .expect("division by zero should emit LLVM");
+    let stderr = compile_and_run_llvm_expect_failure(&llvm);
+    match stderr {
+        None => eprintln!("clang not available; skipping runtime division-by-zero check"),
+        Some(Ok(stderr)) => assert!(
+            stderr.contains("hulk runtime error"),
+            "expected 'hulk runtime error' on stderr, got: {stderr:?}"
+        ),
+        Some(Err(err)) => panic!("test infrastructure error: {err}"),
+    }
+}
+
+#[test]
+fn modulo_by_zero_aborts_at_runtime() {
+    let llvm = emit_llvm_from_source("print(5 % 0);")
+        .expect("modulo by zero should emit LLVM");
+    let stderr = compile_and_run_llvm_expect_failure(&llvm);
+    match stderr {
+        None => eprintln!("clang not available; skipping runtime modulo-by-zero check"),
+        Some(Ok(stderr)) => assert!(
+            stderr.contains("hulk runtime error"),
+            "expected 'hulk runtime error' on stderr, got: {stderr:?}"
+        ),
+        Some(Err(err)) => panic!("test infrastructure error: {err}"),
+    }
+}
+
+#[test]
+fn vector_oob_aborts_at_runtime() {
+    let llvm = emit_llvm_from_source("let v = [1, 2, 3] in print(v[10]);")
+        .expect("vector OOB should emit LLVM");
+    let stderr = compile_and_run_llvm_expect_failure(&llvm);
+    match stderr {
+        None => eprintln!("clang not available; skipping runtime vector-OOB check"),
+        Some(Ok(stderr)) => assert!(
+            stderr.contains("hulk runtime error"),
+            "expected 'hulk runtime error' on stderr, got: {stderr:?}"
+        ),
+        Some(Err(err)) => panic!("test infrastructure error: {err}"),
+    }
+}
+
