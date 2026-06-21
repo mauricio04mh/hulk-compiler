@@ -9,8 +9,9 @@ use crate::hir::{
 };
 use crate::types::Type;
 use hulk_frontend::ast::{
-    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, ProtocolDecl,
-    Span, TypeDecl, TypeMember, TypeParent, TypeRef, UnaryOp,
+    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, LiteralPattern, MatchArm, MethodDecl,
+    Param, Pattern, Program, ProtocolDecl, Span, TypeDecl, TypeMember, TypeParent, TypeRef,
+    UnaryOp,
 };
 use std::collections::HashMap;
 
@@ -1086,6 +1087,11 @@ impl HirBuilder {
                 return_type,
                 body,
             } => self.analyze_lambda(*span, params, return_type.as_ref(), body),
+            Expr::Match {
+                span,
+                scrutinee,
+                arms,
+            } => self.analyze_match(*span, scrutinee, arms),
         }
     }
 
@@ -1116,6 +1122,7 @@ impl HirBuilder {
             None => {
                 self.errors.push(SemanticError::UndefinedVariable {
                     name: name.to_string(),
+                    span,
                 });
                 let symbol = self.new_symbol_id();
                 self.make_expr(
@@ -1298,7 +1305,7 @@ impl HirBuilder {
                 }
                 None => {
                     self.errors
-                        .push(SemanticError::UndefinedVariable { name: name.clone() });
+                        .push(SemanticError::UndefinedVariable { name: name.clone(), span });
                     HirAssignTarget::Local {
                         name: name.clone(),
                         symbol: self.new_symbol_id(),
@@ -1786,6 +1793,7 @@ impl HirBuilder {
             self.errors.push(SemanticError::UndefinedMethod {
                 type_name: method_receiver_type_name(&object_hir.ty),
                 method_name: method.to_string(),
+                span,
             });
             let hir_args = args.iter().map(|arg| self.analyze_expr(arg)).collect();
             let signature = FunctionType {
@@ -2292,6 +2300,232 @@ impl HirBuilder {
         )
     }
 
+    fn analyze_match(&mut self, span: Span, scrutinee: &Expr, arms: &[MatchArm]) -> HirExpr {
+        let scr_hir = self.analyze_expr(scrutinee);
+        let scr_ty = scr_hir.ty.clone();
+        let scr_name = format!("_match_scr_{}", self.next_symbol_id);
+
+        self.push_scope();
+        let scr_symbol = self.define_symbol(scr_name.clone(), scr_ty.clone(), SymbolKind::Local);
+
+        let scr_ref = self.make_expr(
+            span,
+            scr_ty.clone(),
+            HirExprKind::Var {
+                name: scr_name.clone(),
+                symbol: scr_symbol.id,
+            },
+        );
+
+        // Find the first catch-all arm (Wildcard or Binding).
+        let catch_all_idx = arms
+            .iter()
+            .position(|a| matches!(a.pattern, Pattern::Wildcard | Pattern::Binding(_)));
+
+        let (cond_arms, else_arm) = if let Some(idx) = catch_all_idx {
+            (&arms[..idx], Some(&arms[idx]))
+        } else {
+            (arms, None)
+        };
+
+        // Build conditional branches.
+        let mut branches: Vec<(HirExpr, HirExpr)> = Vec::new();
+        let mut unified_ty = Type::Unknown;
+
+        for arm in cond_arms.iter() {
+            let (cond, body) = self.build_arm_cond_and_body(span, &scr_ref, arm);
+            unified_ty = self.unify_types(&unified_ty, &body.ty);
+            branches.push((cond, body));
+        }
+
+        // Build else branch.
+        let else_hir = if let Some(arm) = else_arm {
+            match &arm.pattern {
+                Pattern::Wildcard => self.analyze_expr(&arm.body),
+                Pattern::Binding(bind_name) => {
+                    self.push_scope();
+                    let bind_sym = self.define_symbol(
+                        bind_name.clone(),
+                        scr_ty.clone(),
+                        SymbolKind::Local,
+                    );
+                    let body_hir = self.analyze_expr(&arm.body);
+                    let body_ty = body_hir.ty.clone();
+                    self.pop_scope();
+                    let binding = HirLetBinding {
+                        name: bind_name.clone(),
+                        symbol: bind_sym.id,
+                        ty: scr_ty.clone(),
+                        value: scr_ref.clone(),
+                        span,
+                    };
+                    self.make_expr(
+                        span,
+                        body_ty,
+                        HirExprKind::Let {
+                            bindings: vec![binding],
+                            body: Box::new(body_hir),
+                        },
+                    )
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            // Non-exhaustive: emit a diagnostic and produce a dummy else.
+            let ty_name = format!("{:?}", scr_ty);
+            self.errors.push(SemanticError::NonExhaustiveMatch {
+                scrutinee_type: ty_name,
+            });
+            self.make_expr(span, Type::Unknown, HirExprKind::Number(0.0))
+        };
+
+        unified_ty = self.unify_types(&unified_ty, &else_hir.ty);
+
+        let if_hir = self.make_expr(
+            span,
+            unified_ty,
+            HirExprKind::If {
+                branches,
+                else_branch: Box::new(else_hir),
+            },
+        );
+
+        self.pop_scope();
+
+        let scr_binding = HirLetBinding {
+            name: scr_name,
+            symbol: scr_symbol.id,
+            ty: scr_ty,
+            value: scr_hir,
+            span,
+        };
+        let result_ty = if_hir.ty.clone();
+        self.make_expr(
+            span,
+            result_ty,
+            HirExprKind::Let {
+                bindings: vec![scr_binding],
+                body: Box::new(if_hir),
+            },
+        )
+    }
+
+    fn build_arm_cond_and_body(
+        &mut self,
+        span: Span,
+        scr_ref: &HirExpr,
+        arm: &MatchArm,
+    ) -> (HirExpr, HirExpr) {
+        match &arm.pattern {
+            Pattern::TypePattern { type_name, bind } => {
+                let cond = self.make_expr(
+                    span,
+                    Type::Boolean,
+                    HirExprKind::TypeTest {
+                        expr: Box::new(scr_ref.clone()),
+                        type_name: type_name.clone(),
+                    },
+                );
+                let body = if let Some(bind_name) = bind {
+                    let bind_ty = Type::UserType(type_name.clone());
+                    self.push_scope();
+                    let cast_val = self.make_expr(
+                        span,
+                        bind_ty.clone(),
+                        HirExprKind::TypeCast {
+                            expr: Box::new(scr_ref.clone()),
+                            type_name: type_name.clone(),
+                        },
+                    );
+                    let bind_sym = self.define_symbol(
+                        bind_name.clone(),
+                        bind_ty.clone(),
+                        SymbolKind::Local,
+                    );
+                    let body_hir = self.analyze_expr(&arm.body);
+                    let body_ty = body_hir.ty.clone();
+                    self.pop_scope();
+                    let binding = HirLetBinding {
+                        name: bind_name.clone(),
+                        symbol: bind_sym.id,
+                        ty: bind_ty,
+                        value: cast_val,
+                        span,
+                    };
+                    self.make_expr(
+                        span,
+                        body_ty,
+                        HirExprKind::Let {
+                            bindings: vec![binding],
+                            body: Box::new(body_hir),
+                        },
+                    )
+                } else {
+                    self.analyze_expr(&arm.body)
+                };
+                (cond, body)
+            }
+            Pattern::Literal(lit) => {
+                let lit_hir = match lit {
+                    LiteralPattern::Number(v) => {
+                        self.make_expr(span, Type::Number, HirExprKind::Number(*v))
+                    }
+                    LiteralPattern::String(s) => {
+                        self.make_expr(span, Type::String, HirExprKind::String(s.clone()))
+                    }
+                    LiteralPattern::Bool(b) => {
+                        self.make_expr(span, Type::Boolean, HirExprKind::Bool(*b))
+                    }
+                };
+                let cond = self.make_expr(
+                    span,
+                    Type::Boolean,
+                    HirExprKind::Binary {
+                        op: BinaryOp::Eq,
+                        left: Box::new(scr_ref.clone()),
+                        right: Box::new(lit_hir),
+                    },
+                );
+                let body = self.analyze_expr(&arm.body);
+                (cond, body)
+            }
+            // Binding/Wildcard appearing before the last arm: treat as unconditional.
+            Pattern::Binding(bind_name) => {
+                let cond = self.make_expr(span, Type::Boolean, HirExprKind::Bool(true));
+                self.push_scope();
+                let bind_sym = self.define_symbol(
+                    bind_name.clone(),
+                    scr_ref.ty.clone(),
+                    SymbolKind::Local,
+                );
+                let body_hir = self.analyze_expr(&arm.body);
+                let body_ty = body_hir.ty.clone();
+                self.pop_scope();
+                let binding = HirLetBinding {
+                    name: bind_name.clone(),
+                    symbol: bind_sym.id,
+                    ty: scr_ref.ty.clone(),
+                    value: scr_ref.clone(),
+                    span,
+                };
+                let wrapped = self.make_expr(
+                    span,
+                    body_ty,
+                    HirExprKind::Let {
+                        bindings: vec![binding],
+                        body: Box::new(body_hir),
+                    },
+                );
+                (cond, wrapped)
+            }
+            Pattern::Wildcard => {
+                let cond = self.make_expr(span, Type::Boolean, HirExprKind::Bool(true));
+                let body = self.analyze_expr(&arm.body);
+                (cond, body)
+            }
+        }
+    }
+
     /// Inline-expand a `define` macro call with call-by-name substitution.
     fn inline_macro(
         &mut self,
@@ -2365,7 +2599,7 @@ impl HirBuilder {
         if let Some(symbol) = self.resolve_symbol(name) {
             if matches!(symbol.kind, SymbolKind::BuiltinConstant) {
                 self.errors
-                    .push(SemanticError::UndefinedFunction { name: name.clone() });
+                    .push(SemanticError::UndefinedFunction { name: name.clone(), span });
                 let hir_args = args.iter().map(|arg| self.analyze_expr(arg)).collect();
                 return self.make_expr(
                     span,
@@ -2405,7 +2639,7 @@ impl HirBuilder {
         }
 
         self.errors
-            .push(SemanticError::UndefinedFunction { name: name.clone() });
+            .push(SemanticError::UndefinedFunction { name: name.clone(), span });
         let hir_args = args.iter().map(|arg| self.analyze_expr(arg)).collect();
         self.make_expr(
             span,
@@ -2573,6 +2807,23 @@ impl HirBuilder {
                     FunctionType {
                         params: vec![],
                         return_type: Type::Number,
+                    },
+                )),
+                _ => None,
+            },
+            Type::String => match method {
+                "length" | "size" => Some((
+                    "String".to_string(),
+                    FunctionType {
+                        params: vec![],
+                        return_type: Type::Number,
+                    },
+                )),
+                "substring" => Some((
+                    "String".to_string(),
+                    FunctionType {
+                        params: vec![Type::Number, Type::Number],
+                        return_type: Type::String,
                     },
                 )),
                 _ => None,
@@ -2842,6 +3093,31 @@ fn substitute_expr(expr: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             params: params.clone(),
             return_type: return_type.clone(),
             body: Box::new(substitute_expr(body, subst)),
+        },
+        Expr::Match { span, scrutinee, arms } => Expr::Match {
+            span: *span,
+            scrutinee: Box::new(substitute_expr(scrutinee, subst)),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    let mut inner = subst.clone();
+                    // Binding patterns shadow the substitution variable inside the arm body.
+                    match &arm.pattern {
+                        Pattern::Binding(name) => {
+                            inner.remove(name.as_str());
+                        }
+                        Pattern::TypePattern { bind: Some(name), .. } => {
+                            inner.remove(name.as_str());
+                        }
+                        _ => {}
+                    }
+                    hulk_frontend::ast::MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: substitute_expr(&arm.body, &inner),
+                        span: arm.span,
+                    }
+                })
+                .collect(),
         },
     }
 }
