@@ -5,7 +5,8 @@ use crate::error::SemanticError;
 use crate::resolver::resolve_program;
 use crate::types::Type;
 use hulk_frontend::ast::{
-    BinaryOp, Decl, Expr, FunctionDecl, MethodDecl, Param, Program, TypeDecl, TypeMember, UnaryOp,
+    BinaryOp, Decl, Expr, FunctionDecl, LiteralPattern, MethodDecl, Param, Pattern, Program,
+    TypeDecl, TypeMember, UnaryOp,
 };
 use std::collections::HashMap;
 
@@ -359,7 +360,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
         Expr::Var(name, _) => match env.resolve_var(name) {
             Some(ty) => ty,
             None => {
-                env.record_error(SemanticError::UndefinedVariable { name: name.clone() });
+                env.record_error(SemanticError::UndefinedVariable { name: name.clone(), span: hulk_frontend::ast::Span::default() });
                 Type::Unknown
             }
         },
@@ -503,7 +504,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             let target_ty = match env.resolve_var(name) {
                 Some(ty) => ty,
                 None => {
-                    env.record_error(SemanticError::UndefinedVariable { name: name.clone() });
+                    env.record_error(SemanticError::UndefinedVariable { name: name.clone(), span: hulk_frontend::ast::Span::default() });
                     infer_expr(value, env);
                     return Type::Unknown;
                 }
@@ -657,7 +658,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                     }
                 }
 
-                env.record_error(SemanticError::UndefinedFunction { name: name.clone() });
+                env.record_error(SemanticError::UndefinedFunction { name: name.clone(), span: hulk_frontend::ast::Span::default() });
                 for arg in args {
                     infer_expr(arg, env);
                 }
@@ -969,6 +970,7 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
                 env.record_error(SemanticError::UndefinedMethod {
                     type_name: method_receiver_type_name(&obj_ty),
                     method_name: method.clone(),
+                    span: hulk_frontend::ast::Span::default(),
                 });
                 for arg in args {
                     infer_expr(arg, env);
@@ -1079,6 +1081,33 @@ fn infer_expr(expr: &Expr, env: &mut TypeEnv) -> Type {
             }
             Type::Vector(Box::new(inner_ty))
         }
+
+        Expr::Match { scrutinee, arms, .. } => {
+            infer_expr(scrutinee, env);
+            let mut result_ty = Type::Unknown;
+            for arm in arms {
+                env.push_scope();
+                match &arm.pattern {
+                    Pattern::Binding(name) => {
+                        env.define_var(name.clone(), Type::Unknown);
+                    }
+                    Pattern::TypePattern { type_name, bind } => {
+                        if let Some(bind_name) = bind {
+                            let ty = Type::UserType(type_name.clone());
+                            env.define_var(bind_name.clone(), ty);
+                        }
+                    }
+                    Pattern::Literal(LiteralPattern::Number(_)) => {}
+                    Pattern::Literal(LiteralPattern::String(_)) => {}
+                    Pattern::Literal(LiteralPattern::Bool(_)) => {}
+                    Pattern::Wildcard => {}
+                }
+                let body_ty = infer_expr(&arm.body, env);
+                env.pop_scope();
+                result_ty = unify_types(&result_ty, &body_ty, &env.registry);
+            }
+            result_ty
+        }
     }
 }
 
@@ -1101,6 +1130,15 @@ fn method_signature_for_call(
             "next" => Some(("Iterable".to_string(), vec![], Type::Boolean)),
             "current" => Some(("Iterable".to_string(), vec![], *inner.clone())),
             "size" => Some(("Iterable".to_string(), vec![], Type::Number)),
+            _ => None,
+        },
+        Type::String => match method {
+            "length" | "size" => Some(("String".to_string(), vec![], Type::Number)),
+            "substring" => Some((
+                "String".to_string(),
+                vec![Type::Number, Type::Number],
+                Type::String,
+            )),
             _ => None,
         },
         _ => None,
