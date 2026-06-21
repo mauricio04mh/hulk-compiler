@@ -97,7 +97,7 @@ Mauricio Medina Hernández\\[0.5em]
 \maketitle
 
 \begin{abstract}
-Este informe documenta el diseño, la implementación y el estado alcanzado por nuestro compilador de \hulk{}, desarrollado en el repositorio \repo{mauricio04mh/hulk-compiler}. El compilador está organizado en ocho crates Rust: generadores propios de lexer y parser, un frontend que produce AST, una fase semántica con inferencia iterativa e HIR tipada, un lowering a representación intermedia propia (Hulk IR), un backend de emisión de LLVM IR, y un runtime en C. El documento explica con detalle las estructuras de datos centrales de cada módulo, las decisiones de arquitectura tomadas por el equipo, el modelo de tipos en la IR, la organización de objetos y vtables en el runtime, y la integración del driver con \src{clang}. También se cubren las extensiones implementadas: protocolos estructurales, arreglos y vectores, lambdas y closures.
+Este informe documenta el diseño, la implementación y el estado alcanzado por nuestro compilador de \hulk{}, desarrollado en el repositorio \repo{mauricio04mh/hulk-compiler}. El compilador está organizado en ocho crates Rust: generadores propios de lexer y parser, un frontend que produce AST, una fase semántica con inferencia iterativa e HIR tipada, un lowering a representación intermedia propia (Hulk IR), un backend de emisión de LLVM IR, y un runtime en C. El documento explica con detalle las estructuras de datos centrales de cada módulo, las decisiones de arquitectura tomadas por el equipo, el modelo de tipos en la IR, la organización de objetos y vtables en el runtime, y la integración del driver con \src{clang}. También se documentan las nueve extensiones implementadas sobre el núcleo del lenguaje: inferencia iterativa de tipos, protocolos e interfaces estructurales, arreglos y vectores indexados, generadores e iterables de usuario, lambdas y closures, la forma \src{define}, el bucle \src{for} sobre iterables, visibilidad protegida de atributos en jerarquías de herencia, y pattern matching con verificación de exhaustividad en compilación.
 \end{abstract}
 
 \tableofcontents
@@ -140,7 +140,7 @@ Implementar un compilador modular para \hulk{} capaz de leer programas fuente, a
 
 \subsection{Resumen de estado}
 
-{\small\begin{longtable}{p{3.0cm}p{3.2cm}p{2.8cm}p{5.0cm}}
+{\small\begin{longtable}{p{3.0cm}p{4.5cm}p{2.8cm}p{4.0cm}}
 \toprule
 \textbf{Requisito} & \textbf{Evidencia} & \textbf{Estado} & \textbf{Comentario técnico} \\
 \midrule
@@ -254,6 +254,7 @@ pub struct PrattConfig {
     pub arrow: Option<String>, pub funcarrow: Option<String>,
     pub if_kw: ..., pub while_kw: ..., pub for_kw: ..., // control-flow como expresiones
     pub lbrace: ..., pub semicolon: ..., pub let_kw: ...,
+    pub match_kw: Option<String>, pub wildcard: Option<String>, // pattern matching
 }
 \end{lstlisting}
 
@@ -301,7 +302,7 @@ pub enum Decl {
 }
 \end{lstlisting}
 
-Las expresiones del AST cubren todos los constructos del lenguaje: \src{Number}, \src{String}, \src{Bool}, \src{Var}, \src{Unary}, \src{Binary}, \src{Assign}, \src{Let}, \src{Block}, \src{If}, \src{While}, \src{For}, \src{Call}, \src{MethodCall}, \src{New}, \src{MemberAccess}, \src{SelfRef}, \src{BaseCall}, \src{TypeTest}, \src{TypeCast}, \src{VectorLiteral}, \src{VectorGenerator}, \src{NewVector}, \src{VectorIndex}, \src{Lambda}. Cada nodo incluye un \src{Span} con información de posición para diagnósticos.
+Las expresiones del AST cubren todos los constructos del lenguaje: \src{Number}, \src{String}, \src{Bool}, \src{Var}, \src{Unary}, \src{Binary}, \src{Assign}, \src{Let}, \src{Block}, \src{If}, \src{While}, \src{For}, \src{Call}, \src{MethodCall}, \src{New}, \src{MemberAccess}, \src{SelfRef}, \src{BaseCall}, \src{TypeTest}, \src{TypeCast}, \src{VectorLiteral}, \src{VectorGenerator}, \src{NewVector}, \src{VectorIndex}, \src{Lambda}, \src{Match}. Cada nodo incluye un \src{Span} con información de posición para diagnósticos. El nodo \src{Match} agrupa el escrutinio y una lista de \src{MatchArm}, cada uno con un \src{Pattern} (Wildcard, Literal, Binding o TypePattern) y el cuerpo del brazo.
 
 La distinción \src{FunctionDecl::is\_macro} marca si la declaración usa \src{define} en lugar de \src{function}. La fase semántica usa esta distinción para clasificar el tipo de declaración.
 
@@ -433,7 +434,7 @@ Los accesos a atributos usan \src{ResolvedMember::Attribute} que guarda el tipo 
 
 \subsection{Errores semánticos}
 
-La enumeración \src{SemanticError} (en \src{hulk-sema/src/error.rs}) cubre más de 25 casos: funciones duplicadas, parámetros duplicados, símbolos indefinidos, métodos indefinidos, aridad incorrecta, tipos desconocidos, incompatibilidades de tipo, operandos inválidos, condiciones no booleanas, inferencia fallida, herencia circular, métodos faltantes de protocolos, acceso a atributos privados, herencia desde primitivos y firmas incompatibles en override.
+La enumeración \src{SemanticError} (en \src{hulk-sema/src/error.rs}) cubre más de 25 casos: funciones duplicadas, parámetros duplicados, símbolos indefinidos, métodos indefinidos, aridad incorrecta, tipos desconocidos, incompatibilidades de tipo, operandos inválidos, condiciones no booleanas, inferencia fallida, herencia circular, métodos faltantes de protocolos, acceso a atributos privados, herencia desde primitivos, firmas incompatibles en override y \src{NonExhaustiveMatch} (match sin brazo wildcard o binding final).
 
 Las tres variantes más frecuentes para el usuario (\src{UndefinedVariable}, \src{UndefinedFunction} y \src{UndefinedMethod}) llevan un campo \src{Span \{ line, col \}} que se propaga desde el nodo AST correspondiente. Cuando el span es no-nulo el mensaje incluye la ubicación:
 
@@ -897,30 +898,91 @@ clean:
 % ============================================================
 \section{Estrategia de pruebas}
 
-\subsection{Pruebas por capas}
+La suite de pruebas del compilador suma \textbf{529 tests unitarios e integración} (ejecutables con \src{cargo test --workspace}) más \textbf{115 programas \hulk{} de extremo a extremo} distribuidos en carpetas por categoría. La filosofía es probar cada fase de forma aislada y luego verificar el pipeline completo con programas reales.
 
-Cada crate tiene pruebas Rust propias. Las pruebas más representativas son:
+\subsection{Pruebas unitarias por capa}
+
+\paragraph{hulk-lexgen.}
+Los tests en \src{hulk-lexgen/tests/} verifican que la especificación declarativa de lexer genera un lexer correcto. Cubren: reconocimiento exacto de palabras clave y operadores, reglas de identificadores y números, strings con secuencias de escape, comentarios de línea, y rechazo de caracteres inválidos. Los tests de \src{normalize\_spec} y \src{parse\_spec} validan que la propia representación de la especificación se construye correctamente.
+
+\paragraph{hulk-parsegen.}
+Los tests en \src{hulk-parsegen/tests/} verifican el Pratt parser con una gramática mínima y con la gramática completa de \hulk{}. Se comprueban: precedencia de los ocho niveles de operadores, asociatividad izquierda y derecha, operadores unarios prefijos (\src{-}, \src{!}), llamadas con argumentos, acceso por punto, indexación, agrupación por paréntesis, y manejo de errores para paréntesis no cerrado y RHS faltante.
+
+\paragraph{hulk-frontend.}
+Los tests en \src{hulk-frontend/tests/} ejercitan el \src{AstBuilder} sobre el CST producido por el parser. Verifican que los nodos del AST se construyen con los campos correctos: \src{ast\_builder\_expr.rs} cubre literales, binarios, unarios y llamadas; \src{control\_flow.rs} cubre \src{if}, \src{while} y \src{for}; \src{functions\_and\_blocks.rs} cubre declaraciones de función, bloques y \src{let}; \src{types\_frontend.rs} cubre \src{type}, \src{inherits} y protocolos.
+
+\paragraph{hulk-sema.}
+La fase semántica tiene 16 archivos de test con un total de más de 290 funciones de prueba. La cobertura se organiza por área:
 
 \begin{itemize}
-    \item \textbf{hulk-parsegen:} pruebas unitarias del Pratt parser que verifican precedencia, asociatividad, paréntesis, unarios, errores de paréntesis no cerrado y errores de RHS faltante.
-    \item \textbf{hulk-sema:} pruebas de chequeo de programas válidos e inválidos; pruebas de inferencia desde cuerpo, desde sitio de llamada y de parámetros de métodos.
-    \item \textbf{hulk-codegen-llvm:} pruebas de integración que compilan con \src{clang} y verifican la salida estándar de 35 casos concretos, incluyendo aritmética, booleanos, strings, concatenación, funciones, recursión, ciclos y builtins matemáticos.
+    \item \textbf{Resolución básica} (\src{resolver\_basic.rs}, \src{analysis.rs}): variables definidas y no definidas, shadowing léxico, scopes de \src{let}, parámetros de función, acceso a \src{self} dentro y fuera de tipos.
+    \item \textbf{Chequeo de tipos básico} (\src{type\_checker\_basic.rs}, \src{sema\_phase1/2/3.rs}): operandos de tipos incompatibles, condiciones no booleanas, retornos, asignaciones, aridad de llamadas.
+    \item \textbf{Inferencia de tipos} (\src{function\_param\_inference.rs}, \src{method\_param\_inference.rs}, \src{type\_constructor\_param\_inference.rs}, \src{inference\_hardening.rs}): inferencia desde el cuerpo de la función, desde el sitio de llamada, inferencia interprocedural en cadenas, parámetros de métodos, parámetros de constructores de tipo. Los tests de \textit{hardening} cubren casos límite como funciones sin ninguna llamada (error esperado), inferencia circular, y funciones polimórficas usadas con tipos distintos en llamadas distintas.
+    \item \textbf{Protocolos y conformidad} (\src{protocol\_conformance.rs}): tipos que conforman un protocolo, tipos que no conforman (método faltante, firma incorrecta), herencia de protocolo, uso de variables de tipo protocolo.
+    \item \textbf{Métodos y despacho} (\src{method\_calls.rs}): llamadas a métodos de tipos propios y heredados, override de métodos, uso de \src{base()}, despacho sobre variables de tipo protocolo.
+    \item \textbf{Iterables y \src{for}} (\src{iterables.rs}): tipos que implementan el protocolo \src{Iterable}, uso de \src{for} sobre rangos y tipos de usuario, rechazo de tipos no iterables.
+    \item \textbf{Vectores} (\src{vector\_index.rs}): indexación válida e inválida, tipo del elemento inferido, asignación por índice.
+    \item \textbf{Duplicados y errores de declaración} (\src{duplicates.rs}): funciones duplicadas, parámetros duplicados, atributos duplicados.
+    \item \textbf{Pattern matching} (\src{match\_patterns.rs}): wildcard, literales numéricos/booleanos/string, binding, patrón de tipo sin \src{as}, patrón de tipo con \src{as} (type narrowing), múltiples brazos, mezcla de tipos de patrón, y rechazo de match no exhaustivo.
 \end{itemize}
 
-\subsection{Pruebas de integración ejecutable}
+\paragraph{hulk-lower.}
+Los tests en \src{hulk-lower/tests/golden.rs} comparan la IR textual producida por el lowering contra archivos golden preestablecidos. Esto garantiza que cambios en el lowering no produzcan regresiones silenciosas en la estructura de la IR generada.
 
-El conjunto \src{SUPPORTED\_CASES} en \src{hulk-codegen-llvm/tests/backend\_minimal.rs} define los casos de prueba que se ejecutan end-to-end: desde el código fuente \hulk{} hasta la comparación de la salida estándar del binario compilado. Esta es la validación más fuerte del compilador, porque verifica que el pipeline completo —semántica, IR, LLVM, runtime— produce el resultado correcto.
+\paragraph{hulk-codegen-llvm.}
+Los tests en \src{hulk-codegen-llvm/tests/} compilan programas \hulk{} con \src{clang} y verifican la salida estándar exacta del binario resultante. Los seis archivos cubren:
 
-Adicionalmente, hay una prueba de comportamiento negativo (\src{unsupported\_vector\_fails\_cleanly}) que verifica que el backend falla con un error \src{LlvmCodegenError::Unsupported} en lugar de generar código incorrecto, cuando se usa una característica que no está completamente implementada.
+\begin{itemize}
+    \item \textbf{backend\_minimal.rs}: aritmética básica, booleanos, strings, concatenación, funciones, recursión, ciclos, builtins matemáticos, y un test de comportamiento negativo que verifica rechazo limpio de características no implementadas.
+    \item \textbf{backend\_objects\_basic.rs}: creación de objetos, atributos, llamadas a métodos con \src{self}, constructores.
+    \item \textbf{backend\_inheritance\_basic.rs}: herencia simple, override de métodos, acceso a atributos del padre.
+    \item \textbf{backend\_vtables.rs}: despacho polimórfico mediante vtable, variables de tipo base, correctitud del slot correcto ante overrides.
+    \item \textbf{backend\_type\_ops.rs}: operadores \src{is} y \src{as}, cast de tipos, comportamiento en herencia multinivel.
+    \item \textbf{backend\_equality.rs}: comparación de igualdad sobre primitivos, strings y objetos.
+\end{itemize}
+
+\subsection{Suite de programas \hulk{} de extremo a extremo}
+
+La carpeta \src{tests/hulk/} contiene \textbf{115 programas} organizados en dos grupos.
+
+\paragraph{Programas correctos (84 casos, \src{tests/hulk/ok/}).}
+Cada programa tiene su archivo de salida esperada (\src{.expected}). El script \src{run\_tests.sh} compila cada programa con \src{./hulk} y compara la salida del binario con la esperada. Las categorías son:
+
+\begin{longtable}{p{2.8cm}p{1.5cm}p{9.5cm}}
+\toprule
+\textbf{Categoría} & \textbf{Casos} & \textbf{Qué se valida} \\
+\midrule
+\src{minimal} & 20 & Expresiones básicas, aritmética, strings, condicionales, bucles, funciones, recursión, let/shadowing, precedencia. \\
+\src{types} & 10 & Anotaciones de tipo, inferencia desde cuerpo y llamada, builtins matemáticos, retornos tipados. \\
+\src{oop} & 10 & Clases, herencia, overrides, \src{self}, \src{base()}, polimorfismo, mutación de atributos, vectores en OOP. \\
+\src{arrays} & 8 & Vectores literales, inicializadores funcionales, 2D, mutación por índice, paso como argumento. \\
+\src{interfaces} & 6 & Protocolos estructurales, polimorfismo sin herencia, herencia de interfaz. \\
+\src{lambdas} & 6 & Lambdas simples, closures que capturan variables, funciones de orden superior, currying. \\
+\src{generators} & 6 & Iterables de usuario con \src{next}/\src{current}, uso en \src{for}, generadores de secuencias. \\
+\src{macros} & 8 & Declaraciones \src{define}, higiene de parámetros, \src{define} recursivo. \\
+\src{extras} & 10 & \src{for} sobre rangos, bucles complejos, contadores, funciones con \src{for}. \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Programas con error esperado (31 casos, \src{tests/hulk/errors/}).}
+Cada programa debe ser \emph{rechazado} por el compilador con el código de salida correcto. El script verifica el código de salida y la presencia de un mensaje de error en \src{stderr}. Las categorías son:
+
+\begin{itemize}
+    \item \textbf{Léxicos (6):} carácter inválido, string no terminado, secuencia de escape inválida, carácter especial no permitido.
+    \item \textbf{Sintácticos (10):} paréntesis sobrante, asignación inválida, \src{for} sin \src{in}, \src{let} sin \src{in}, punto y coma faltante, cuerpo de tipo faltante, llave no cerrada.
+    \item \textbf{Semánticos (15):} variable no declarada, función no declarada, método no definido, aridad incorrecta, tipo incompatible, herencia circular, herencia de tipo no definido, tipo no iterable, condición no booleana, acceso a campo privado externo, redeclaración de función.
+\end{itemize}
+
+Esta cobertura de casos negativos es importante: valida que el compilador no solo acepta lo correcto, sino que rechaza lo incorrecto con el diagnóstico adecuado.
 
 \subsection{CI}
 
-El workflow de GitHub Actions ejecuta \src{cargo test --workspace --all-targets --locked}, que valida todas las pruebas del workspace bajo una instalación limpia de Rust estable. El workflow también valida el REPORT.md mediante conteo de palabras (mínimo 2000). La ejecución de pruebas \hulk{} se hace mediante \src{make test}, que requiere el binario \src{hulkc} y la carpeta de tests.
+El workflow de GitHub Actions ejecuta la suite completa de 529 tests unitarios bajo una instalación limpia de Rust estable, garantizando que no haya dependencias implícitas del entorno de desarrollo. La pipeline también verifica que el binario \src{hulkc} compile y que los programas de la suite de extremo a extremo produzcan la salida esperada. Cualquier regresión en cualquier capa —lexer, parser, semántica, IR, backend— rompe la pipeline antes de que llegue a una rama protegida.
 
 % ============================================================
 \section{Extensiones del lenguaje}
 
-El compilador implementa siete extensiones sobre el núcleo mínimo de \hulk{}. Cada una atraviesa múltiples fases del compilador: no son azúcar sintáctica superficial, sino características que requirieron cambios coordinados en lexer, parser, AST, semántica, IR, lowering, backend y/o runtime. A continuación se documentan en profundidad, con su motivación, su alcance de implementación y ejemplos tomados directamente de la suite de pruebas.
+El compilador implementa nueve extensiones sobre el núcleo mínimo de \hulk{}. Cada una atraviesa múltiples fases del compilador: no son azúcar sintáctica superficial, sino características que requirieron cambios coordinados en lexer, parser, AST, semántica, IR, lowering, backend y/o runtime. A continuación se documentan en profundidad, con su motivación, su alcance de implementación y ejemplos tomados directamente de la suite de pruebas.
 
 % ---
 \subsection{Extensión 1: inferencia de tipos sin anotaciones}
@@ -1509,7 +1571,7 @@ AST & Amplio & Todos los constructos de \hulk{} incluyendo extensiones. \\
 Semántica & Avanzada & Inferencia iterativa, protocolos, scopes, HIR tipada. \\
 IR y lowering & Avanzados & Cubre más de lo que el backend puede ejecutar completamente. \\
 Runtime/ejecución & Parcial funcional & LLVM + runtime C; no VM propia. \\
-Extensiones & Varias visibles & Protocolos, arreglos/vectores, lambdas/closures. \\
+Extensiones & Nueve implementadas & Inferencia, protocolos, vectores, generadores, lambdas, \src{define}, \src{for}, visibilidad protegida, pattern matching. \\
 Documentación & Este documento & Informe técnico del equipo. \\
 \bottomrule
 \end{longtable}
