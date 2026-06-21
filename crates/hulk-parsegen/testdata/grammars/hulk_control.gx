@@ -69,3 +69,4 @@ OperatorExpr -> LPAREN ;
 OperatorExpr -> NOT ;
 OperatorExpr -> MINUS ;
 OperatorExpr -> PLUS ;
+OperatorExpr -> MATCH ;

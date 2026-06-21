@@ -132,3 +132,4 @@ OperatorExpr -> BASE ;
 OperatorExpr -> LBRACKET ;
 OperatorExpr -> LBRACE ;
 OperatorExpr -> FUNCTION ;
+OperatorExpr -> MATCH ;

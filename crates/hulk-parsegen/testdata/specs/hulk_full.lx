@@ -19,7 +19,9 @@ keyword protocol PROTOCOL
 keyword extends EXTENDS
 keyword interface INTERFACE
 keyword define DEFINE
+keyword match MATCH
 
+symbol "_" WILDCARD
 symbol "@@" ATAT
 symbol "@" AT
 symbol "==" EQ

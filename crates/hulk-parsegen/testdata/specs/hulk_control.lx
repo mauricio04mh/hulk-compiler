@@ -7,7 +7,9 @@ keyword if IF
 keyword elif ELIF
 keyword else ELSE
 keyword while WHILE
+keyword match MATCH
 
+symbol "_" WILDCARD
 symbol "@@" ATAT
 symbol "@" AT
 symbol "==" EQ

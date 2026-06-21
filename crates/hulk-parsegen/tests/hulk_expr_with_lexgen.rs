@@ -142,6 +142,8 @@ fn hulk_pratt_parser() -> PrattParser {
         semicolon: None,
         function_kw: None,
         let_kw: None,
+        match_kw: None,
+        wildcard: None,
     })
 }
 

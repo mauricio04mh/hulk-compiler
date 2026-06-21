@@ -76,6 +76,8 @@ fn minimal_pratt() -> PrattParser {
         semicolon: None,
         function_kw: None,
         let_kw: None,
+        match_kw: None,
+        wildcard: None,
     })
 }
 

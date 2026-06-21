@@ -1,7 +1,7 @@
 use crate::ast::{
-    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, LetBinding, MethodDecl, NewVectorInit,
-    Param, Program, ProtocolDecl, ProtocolMethod, Span, TypeDecl, TypeMember, TypeParent, TypeRef,
-    UnaryOp,
+    AttributeDecl, BinaryOp, Decl, Expr, FunctionDecl, LetBinding, LiteralPattern, MatchArm,
+    MethodDecl, NewVectorInit, Param, Pattern, Program, ProtocolDecl, ProtocolMethod, Span,
+    TypeDecl, TypeMember, TypeParent, TypeRef, UnaryOp,
 };
 use crate::error::AstError;
 use hulk_parsegen::runtime::cst::CstNode;
@@ -817,6 +817,7 @@ impl AstBuilder {
                 "VectorIndexExpr" => Self::build_vector_index_expr(cst),
                 "NewArrayExpr" => Self::build_new_array_expr(cst),
                 "LambdaExpr" => Self::build_lambda_expr(cst),
+                "MatchExpr" => Self::build_match_expr(cst),
                 "GroupExpr" => {
                     let child = children.first().ok_or_else(|| AstError::MissingChild {
                         node: "GroupExpr".to_string(),
@@ -1607,6 +1608,138 @@ impl AstBuilder {
             callee: Box::new(callee),
             args,
         })
+    }
+
+    fn build_match_expr(cst: &CstNode) -> Result<Expr, AstError> {
+        let span = first_token_span(cst);
+        let (_, children) = as_node(cst)?;
+
+        let scrutinee_node = children.first().ok_or_else(|| AstError::MissingChild {
+            node: "MatchExpr".to_string(),
+            location: AstError::no_location(),
+        })?;
+        let scrutinee = Self::build_expr(scrutinee_node)?;
+
+        let mut arms = Vec::new();
+        for child in children.iter().skip(1) {
+            if as_node_name(child) == Some("MatchArm") {
+                arms.push(Self::build_match_arm(child)?);
+            }
+        }
+
+        Ok(Expr::Match {
+            span,
+            scrutinee: Box::new(scrutinee),
+            arms,
+        })
+    }
+
+    fn build_match_arm(cst: &CstNode) -> Result<MatchArm, AstError> {
+        let span = first_token_span(cst);
+        let (_, children) = as_node(cst)?;
+
+        let pattern_node = children.first().ok_or_else(|| AstError::MissingChild {
+            node: "MatchArm".to_string(),
+            location: AstError::no_location(),
+        })?;
+        let body_node = children.get(1).ok_or_else(|| AstError::MissingChild {
+            node: "MatchArm".to_string(),
+            location: AstError::no_location(),
+        })?;
+
+        let pattern = Self::build_pattern(pattern_node)?;
+        let body = Self::build_expr(body_node)?;
+
+        Ok(MatchArm { pattern, body, span })
+    }
+
+    fn build_pattern(cst: &CstNode) -> Result<Pattern, AstError> {
+        let (name, children) = as_node(cst)?;
+        match name {
+            "PatternWildcard" => Ok(Pattern::Wildcard),
+            "PatternLiteral" => {
+                let tok = children.first().ok_or_else(|| AstError::MissingChild {
+                    node: "PatternLiteral".to_string(),
+                    location: AstError::no_location(),
+                })?;
+                match tok {
+                    CstNode::Token { kind, lexeme, .. } => match kind.as_str() {
+                        "NUMBER" => {
+                            let v = lexeme
+                                .parse::<f64>()
+                                .map_err(|_| AstError::InvalidNumberLiteral {
+                                    literal: lexeme.clone(),
+                                    location: AstError::no_location(),
+                                })?;
+                            Ok(Pattern::Literal(LiteralPattern::Number(v)))
+                        }
+                        "STRING" => Ok(Pattern::Literal(LiteralPattern::String(lexeme.clone()))),
+                        "TRUE" => Ok(Pattern::Literal(LiteralPattern::Bool(true))),
+                        "FALSE" => Ok(Pattern::Literal(LiteralPattern::Bool(false))),
+                        other => Err(AstError::UnexpectedToken {
+                            kind: other.to_string(),
+                            location: AstError::no_location(),
+                        }),
+                    },
+                    _ => Err(AstError::MissingChild {
+                        node: "PatternLiteral".to_string(),
+                        location: AstError::no_location(),
+                    }),
+                }
+            }
+            "PatternType" => {
+                let name_tok = children.first().ok_or_else(|| AstError::MissingChild {
+                    node: "PatternType".to_string(),
+                    location: AstError::no_location(),
+                })?;
+                let type_name = match name_tok {
+                    CstNode::Token { lexeme, .. } => lexeme.clone(),
+                    _ => {
+                        return Err(AstError::MissingChild {
+                            node: "PatternType".to_string(),
+                            location: AstError::no_location(),
+                        })
+                    }
+                };
+                let bind = children
+                    .iter()
+                    .find_map(|n| {
+                        if as_node_name(n) == Some("PatternBind") {
+                            if let CstNode::Node { children: bc, .. } = n {
+                                return bc.first().and_then(|t| {
+                                    if let CstNode::Token { lexeme, .. } = t {
+                                        Some(lexeme.clone())
+                                    } else {
+                                        None
+                                    }
+                                });
+                            }
+                        }
+                        None
+                    });
+                Ok(Pattern::TypePattern { type_name, bind })
+            }
+            "PatternBinding" => {
+                let name_tok = children.first().ok_or_else(|| AstError::MissingChild {
+                    node: "PatternBinding".to_string(),
+                    location: AstError::no_location(),
+                })?;
+                let var_name = match name_tok {
+                    CstNode::Token { lexeme, .. } => lexeme.clone(),
+                    _ => {
+                        return Err(AstError::MissingChild {
+                            node: "PatternBinding".to_string(),
+                            location: AstError::no_location(),
+                        })
+                    }
+                };
+                Ok(Pattern::Binding(var_name))
+            }
+            other => Err(AstError::UnsupportedConstruct {
+                message: format!("Unknown pattern node '{}'", other),
+                location: AstError::no_location(),
+            }),
+        }
     }
 
     fn build_primary_token(kind: &str, lexeme: &str, node: &CstNode) -> Result<Expr, AstError> {
