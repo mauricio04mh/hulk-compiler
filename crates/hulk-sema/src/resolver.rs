@@ -2,7 +2,7 @@ use crate::builtins::{builtin_constants, builtin_functions};
 use crate::error::SemanticError;
 use crate::scope::ScopeStack;
 use crate::symbols::{FunctionSymbol, Symbol, SymbolKind};
-use hulk_frontend::ast::{Decl, Expr, FunctionDecl, Program, TypeDecl, TypeMember};
+use hulk_frontend::ast::{Decl, Expr, FunctionDecl, Pattern, Program, TypeDecl, TypeMember};
 use std::collections::{HashMap, HashSet};
 
 pub struct Resolver {
@@ -177,7 +177,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) -> Result<(), SemanticError> {
         match expr {
             Expr::Number(_) | Expr::String(_) | Expr::Bool(_) => Ok(()),
-            Expr::Var(name, _) => self.resolve_variable(name),
+            Expr::Var(name, span) => self.resolve_variable(name, *span),
             Expr::Unary { expr, .. } => self.resolve_expr(expr),
             Expr::Binary { left, right, .. } => {
                 self.resolve_expr(left)?;
@@ -185,8 +185,8 @@ impl Resolver {
             }
             Expr::Assign { target, value, .. } => {
                 match target.as_ref() {
-                    Expr::Var(name, _) => {
-                        self.resolve_variable(name)?;
+                    Expr::Var(name, span) => {
+                        self.resolve_variable(name, *span)?;
                     }
                     Expr::MemberAccess { object, .. }
                         if matches!(object.as_ref(), Expr::SelfRef) =>
@@ -215,8 +215,8 @@ impl Resolver {
                 result
             }
             Expr::Call { callee, args, .. } => {
-                if let Expr::Var(name, _) = callee.as_ref() {
-                    self.resolve_function_call(name, args.len())?;
+                if let Expr::Var(name, span) = callee.as_ref() {
+                    self.resolve_function_call(name, args.len(), *span)?;
                 } else {
                     self.resolve_expr(callee)?;
                 }
@@ -341,13 +341,40 @@ impl Resolver {
                 }
                 Ok(())
             }
+            Expr::Match { scrutinee, arms, .. } => {
+                self.resolve_expr(scrutinee)?;
+                for arm in arms {
+                    self.scopes.push();
+                    // Binding and TypePattern-with-bind introduce a new variable in this scope.
+                    match &arm.pattern {
+                        Pattern::Binding(name) => {
+                            self.scopes.define(Symbol {
+                                name: name.clone(),
+                                kind: SymbolKind::Variable,
+                            })?;
+                        }
+                        Pattern::TypePattern { bind: Some(name), .. } => {
+                            self.scopes.define(Symbol {
+                                name: name.clone(),
+                                kind: SymbolKind::Variable,
+                            })?;
+                        }
+                        _ => {}
+                    }
+                    let result = self.resolve_expr(&arm.body);
+                    self.scopes.pop();
+                    result?;
+                }
+                Ok(())
+            }
         }
     }
 
-    fn resolve_variable(&self, name: &str) -> Result<(), SemanticError> {
+    fn resolve_variable(&self, name: &str, span: hulk_frontend::ast::Span) -> Result<(), SemanticError> {
         let Some(symbol) = self.scopes.resolve(name) else {
             return Err(SemanticError::UndefinedVariable {
                 name: name.to_string(),
+                span,
             });
         };
 
@@ -355,11 +382,12 @@ impl Resolver {
             SymbolKind::Variable | SymbolKind::Parameter | SymbolKind::BuiltinConstant => Ok(()),
             _ => Err(SemanticError::UndefinedVariable {
                 name: name.to_string(),
+                span,
             }),
         }
     }
 
-    fn resolve_function_call(&self, name: &str, found_arity: usize) -> Result<(), SemanticError> {
+    fn resolve_function_call(&self, name: &str, found_arity: usize, span: hulk_frontend::ast::Span) -> Result<(), SemanticError> {
         if let Some(expected_arity) = self.builtins.get(name) {
             if *expected_arity != found_arity {
                 return Err(SemanticError::ArityMismatch {
@@ -389,6 +417,7 @@ impl Resolver {
 
         Err(SemanticError::UndefinedFunction {
             name: name.to_string(),
+            span,
         })
     }
 }

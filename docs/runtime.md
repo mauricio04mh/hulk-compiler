@@ -1,113 +1,68 @@
 # HULK Runtime ABI
 
 This document defines how backend-generated LLVM IR talks to the HULK runtime.
-It is the contract between `hulk-codegen-llvm` and the runtime support library.
-
-The goal is to keep `hulk-ir` target-independent while giving the LLVM backend a
-clear mapping for values, functions, builtins, heap objects, vectors, strings,
-closures, and dynamic dispatch.
+It is the contract between `hulk-codegen-llvm` and `runtime/hulk_runtime.c`.
 
 ## Pipeline Position
 
 ```text
 HULK source
   -> AST
-  -> SemanticProgram/HIR
+  -> SemanticProgram / HIR
   -> Hulk IR
-  -> LLVM IR
-  -> runtime ABI calls
-  -> executable/JIT
+  -> LLVM IR  (hulk-codegen-llvm)
+  -> runtime ABI calls  (hulk_runtime.c)
+  -> native executable  (clang)
 ```
 
 LLVM IR handles primitive arithmetic, comparisons, branches, calls, and stack
-slots. The runtime handles operations that are part of HULK semantics but not
-native LLVM concepts: printing, strings, heap allocation, vectors, objects,
-vtables, closures, type tests, casts, and runtime failures.
+slots. The runtime handles everything that is part of HULK semantics but not a
+native LLVM concept: printing, strings, heap allocation, vectors, objects,
+vtables, closures, type tests, casts, and runtime safety aborts.
 
-## Implementation Strategy
+## Memory Model
 
-The first implementation should use a small C runtime linked with generated
-LLVM IR:
+All heap allocations go through a 64 MB bump-pointer arena:
 
-```bash
-clang output.ll runtime/hulk_runtime.c -o program
-./program
+```c
+void* hulk_arena_alloc(size_t size);
 ```
 
-Later, the runtime can move to Rust or be split into multiple C/Rust files, but
-the exported ABI names should remain stable.
+The arena is initialized once at process start. There is no `free`; the
+entire arena is released on process exit. Generated LLVM IR never calls
+`malloc` directly — the runtime header redefines `malloc` to `hulk_arena_alloc`.
 
 ## LLVM Type Mapping
 
-The LLVM backend lowers `IrTypeRef` as follows:
+| HULK / IR type | LLVM ABI type |
+|---|---|
+| `Number` | `double` |
+| `Boolean` | `i1` in generated code; `i8` at runtime ABI boundaries |
+| `String` | `ptr` to `%HulkString` |
+| `Object` / `User(T)` | `ptr` (vtable-first layout) |
+| `Vector(T)` | `ptr` to `%HulkVector` |
+| `Iterable(T)` | `ptr` (vtable-first; same as Object) |
+| `Functor(...)` | `ptr` to `%HulkClosure` |
+| `Unknown` | backend error |
+| `Unit` / `Null` | `ptr null` / result ignored |
 
-```text
-HULK / IR type        LLVM ABI type
-------------------------------------------
-Number               double
-Boolean              i1 inside generated code, i8 at runtime ABI boundaries
-String               ptr to %HulkString
-Object               ptr to %HulkObject
-User(T)              ptr to %HulkObject-compatible T allocation
-Vector(T)            ptr to %HulkVector
-Iterable(T)          ptr to %HulkObject for now
-Functor(...)         ptr to %HulkClosure
-Unknown              backend error
-Unit                 ptr null / ignored result depending on context
-Null                 null pointer of the expected pointer type
-```
-
-`Boolean` should use `i1` for branches and primitive comparisons. Runtime
-functions should accept/return `i8` for C ABI simplicity; generated LLVM inserts
-`zext i1 to i8` or `icmp ne i8 %x, 0` as needed.
-
-`Object` is the common erased pointer type for heap values. User objects,
-strings, vectors, and closures may have specialized runtime structs, but values
-that flow through `Object` are passed as object-compatible pointers.
-
-## Backend Minimum Subset
-
-The first LLVM backend only needs this subset:
-
-```text
-Number, Boolean
-functions
-params, locals, temps
-Assign, Unary, Binary
-Label, Jump, Branch, Return
-Call to user functions
-Call to selected builtins: print, sqrt, sin, cos, exp, log, rand
-```
-
-For this subset:
-
-- `Number` maps to `double`;
-- `Boolean` maps to `i1`;
-- `print(Number)` calls `hulk_print_number`;
-- `print(Boolean)` calls `hulk_print_bool`;
-- math builtins call runtime wrappers or LLVM/libm-compatible functions.
-
-Static string literals and `print(String)` are supported in the current phase.
-Vectors, objects, virtual dispatch, closures, and type operations can be added
-after the minimum backend emits valid LLVM and runs simple programs.
+`Boolean` uses `i1` for branches and primitive comparisons. Runtime functions
+accept/return `i8`; generated LLVM inserts `zext i1 to i8` or `icmp ne i8 %x, 0`
+at the boundary.
 
 ## Function ABI
 
-Each HULK IR function lowers to one LLVM function.
+Each HULK IR function lowers to one LLVM function. Name mapping:
 
-Name mapping:
+| IR function name | LLVM function name |
+|---|---|
+| `entry` | `@hulk_entry` |
+| `fact` | `@fact` |
+| `Point_init` | `@Point_init` |
+| `Point_getX` | `@Point_getX` |
+| `lambda_0` | `@lambda_0` |
 
-```text
-IR function name     LLVM function name
---------------------------------------
-entry                @hulk_entry
-fact                 @fact
-Point_init           @Point_init
-Point_getX           @Point_getX
-lambda_0             @lambda_0
-```
-
-The generated module also defines a C-compatible `main`:
+A C-compatible `main` calls `@hulk_entry` and returns 0:
 
 ```llvm
 define i32 @main() {
@@ -117,125 +72,106 @@ entry:
 }
 ```
 
-If `hulk_entry` returns `Object` or another non-primitive value, `main` ignores
-the result unless the source program explicitly printed it.
-
-Parameters and return values use the LLVM type mapping above. Method functions
-receive `self` as their first explicit parameter because `hulk-lower` already
-models `self` explicitly in IR.
+Method functions receive `self` as their first explicit parameter.
 
 ## Locals, Temps, and SSA
 
-The LLVM backend may implement IR locals and temps in either of two ways:
+IR locals and temps are lowered via `alloca` slots in every function. Reads
+become `load` and writes become `store`. The LLVM optimizer's `mem2reg` pass
+converts these to SSA form when invoked.
 
-1. Direct SSA values when the place has a single definition.
-2. `alloca` slots plus `load`/`store` when a local/temp is assigned across
-   branches or loops.
+## Control Flow
 
-The first backend should use `alloca` for all `IrPlace` values. This is simpler
-and correct. Later an optimization pass or mem2reg can clean it up.
+IR labels map to LLVM basic blocks. Every block ends with a terminator
+(`br`, `ret`, or `unreachable`).
 
-Example:
+## Runtime Safety Aborts
 
-```text
-%t0 = %p0 + 1
+```c
+void hulk_abort(const char* msg);
 ```
 
-can lower to:
+Prints `"hulk runtime error: <msg>\n"` to stderr and calls `exit(1)`. Used by
+all safety checks below.
+
+### Division and modulo by zero
+
+Generated by codegen before every `/` and `%` operation:
 
 ```llvm
-%add = fadd double %p0, 1.0
-store double %add, ptr %t0.addr
+%divcheck = fcmp oeq double %rhs, 0.0
+br i1 %divcheck, label %dz_err.N, label %dz_ok.N
+dz_err.N:
+  call void @hulk_abort(ptr @hulk_err_divzero)
+  unreachable
+dz_ok.N:
+  %result = fdiv double %lhs, %rhs
 ```
 
-Reads from `%t0` lower to `load double, ptr %t0.addr`.
+### Null object method call
 
-## Control Flow ABI
+`hulk_object_method(obj, slot)` checks `obj != NULL` before loading the vtable.
 
-IR labels map to LLVM basic blocks local to the current function:
+### VTable slot bounds
 
-```text
-label L1
-jump L2
-branch %cond ? L3 : L4
-```
+`hulk_object_method` also checks `0 <= slot < vtable->method_count`.
 
-lowers to:
+### Null attribute access
 
-```llvm
-L1:
-  br label %L2
+All typed attribute accessors (`hulk_object_get_number`,
+`hulk_object_set_string`, etc.) call `check_obj_not_null` before the field
+offset arithmetic.
 
-  br i1 %cond, label %L3, label %L4
-```
+### Vector index out of bounds
 
-Generated LLVM must ensure every basic block ends with a terminator:
+`hulk_vector_get` and `hulk_vector_set` reject negative indices and indices
+≥ `v->len`.
 
-```text
-br
-ret
-unreachable
-```
+### Type cast failure
+
+`hulk_object_as` verifies the object is non-null and the type test passes
+before returning the pointer; an invalid cast returns null.
 
 ## Builtin ABI
 
-The source-level builtin signatures remain as defined by semantic analysis.
-The runtime ABI uses more specific functions:
-
 ```text
-HULK builtin call        Runtime function
------------------------------------------------------
-print(Number)           void @hulk_print_number(double)
-print(Boolean)          void @hulk_print_bool(i8)
-print(String)           void @hulk_print_string(ptr)
-print(Object/User)      not implemented yet
-sqrt(Number)            double @hulk_sqrt(double)
-sin(Number)             double @hulk_sin(double)
-cos(Number)             double @hulk_cos(double)
-exp(Number)             double @hulk_exp(double)
-log(Number, Number)     double @hulk_log(double, double)
-rand()                  double @hulk_rand()
-range(Number, Number)   ptr @hulk_range_new(double, double)
+HULK call              Runtime function               Notes
+-----------------------------------------------------------------------
+print(Number)          void @hulk_print_number(double)
+print(Boolean)         void @hulk_print_bool(i8)
+print(String)          void @hulk_print_string(ptr)
+print(Object/User)     delegates to hulk_print_string via to_string
+sqrt(x)                double @hulk_sqrt(double)
+sin(x)                 double @hulk_sin(double)
+cos(x)                 double @hulk_cos(double)
+exp(x)                 double @hulk_exp(double)
+log(base, x)           double @hulk_log(double, double)
+pow(x, y)              double @hulk_pow(double, double)
+rand()                 double @hulk_rand()
+abs(x)                 double @hulk_abs(double)
+floor(x)               double @hulk_floor(double)
+ceil(x)                double @hulk_ceil(double)
+round(x)               double @hulk_round(double)
+min(a, b)              double @hulk_min(double, double)
+max(a, b)              double @hulk_max(double, double)
+range(start, end)      ptr    @hulk_range_new(double, double)
 ```
 
-Although HULK models `print` as returning `Object`, the first backend should
-treat it as returning `null Object` after emitting the side-effecting runtime
-call. This matches current programs that use `print` mainly for side effects.
-
-Minimum C declarations:
-
-```c
-void hulk_print_number(double value);
-void hulk_print_bool(unsigned char value);
-void hulk_print_string(struct HulkString* value);
-
-double hulk_sqrt(double value);
-double hulk_sin(double value);
-double hulk_cos(double value);
-double hulk_exp(double value);
-double hulk_log(double base, double value);
-double hulk_rand(void);
-```
+`print` returns a null `Object` pointer; callers that use the return value
+treat it as the unit value.
 
 ## Static Data ABI
 
-`IrDataValue::Number` and `IrDataValue::Boolean` can be emitted as LLVM constants
-directly.
-
-`IrDataValue::String` should lower to a global byte array plus a `HulkString`
-descriptor:
+`IrDataValue::String` lowers to:
 
 ```llvm
 @str_0_data = private unnamed_addr constant [6 x i8] c"hello\00"
 @str_0 = private unnamed_addr constant %HulkString { i64 5, ptr @str_0_data }
 ```
 
-Generated uses of `@s0` become a pointer to the descriptor, not a pointer to the
-raw bytes.
+Uses of `@str_0` pass a pointer to the `HulkString` descriptor.
 
 ## String ABI
-
-Runtime representation:
 
 ```c
 typedef struct HulkString {
@@ -244,329 +180,119 @@ typedef struct HulkString {
 } HulkString;
 ```
 
-For the current backend phase, the runtime only needs printing support for
-static string literals:
-
 ```c
-void hulk_print_string(HulkString* value);
+void       hulk_print_string(HulkString* s);
+HulkString* hulk_string_concat(HulkString* a, HulkString* b);
+HulkString* hulk_string_concat_spaced(HulkString* a, HulkString* b);
+i8          hulk_string_equals(HulkString* a, HulkString* b);
+HulkString* hulk_string_from_number(double n);
+HulkString* hulk_string_from_bool(i8 b);
+i64         hulk_string_len(HulkString* s);
+HulkString* hulk_string_sub(HulkString* s, i64 start, i64 end);
 ```
 
-Static strings are immutable and do not need to be freed in the first
-implementation. Concatenation, equality, and heap string allocation remain
-future work.
+String method calls on a `String`-typed receiver are handled by
+`emit_string_method_call` in codegen:
+
+- `length()` / `size()` → call `@hulk_string_len`, convert `i64` result to `double`
+- `substring(start, end)` → convert `double` args to `i64`, call `@hulk_string_sub`
 
 ## Object ABI
 
-All heap objects begin with a common header:
-
-```c
-typedef struct HulkVTable HulkVTable;
-
-typedef struct HulkObject {
-    HulkVTable* vtable;
-} HulkObject;
-```
-
-Each user type has a generated concrete layout whose first field is compatible
-with `HulkObject`:
-
-```c
-typedef struct Point {
-    HulkVTable* vtable;
-    double x;
-    double y;
-} Point;
-```
-
-Inheritance must preserve prefix layout:
-
-```c
-typedef struct ColoredPoint {
-    HulkVTable* vtable;
-    double x;
-    double y;
-    HulkString* color;
-} ColoredPoint;
-```
-
-This lets a child pointer be used where a parent pointer is expected.
-
-Allocation ABI:
+All heap objects start with a `HulkVTable*` pointer as their first field.
+Attribute values are stored as `int64_t` slots immediately after the vtable pointer.
+Typed accessors (`hulk_object_get_number`, `hulk_object_set_string`, etc.) use
+`memcpy` to union-cast between `double`/`i8`/pointer and `int64_t`.
 
 ```c
 HulkObject* hulk_alloc_object(long long type_id, long long size_bytes);
 ```
 
-Generated LLVM may also emit direct `malloc` calls initially, but the preferred
-ABI is a runtime allocation wrapper so garbage collection or diagnostics can be
-added later.
-
-## Attribute ABI
-
-`AttrId` is a logical field id from Hulk IR. The LLVM backend maps it to a byte
-offset or a generated struct field index using `.TYPES`.
-
-```text
-GetAttr object, #id -> load from computed field
-SetAttr object, #id -> store into computed field
-```
-
-The runtime ABI does not need generic `getattr`/`setattr` functions for normal
-compiled code. The backend should generate direct field access once layouts are
-known.
-
-## VTable and Dispatch ABI
-
-Runtime vtable representation:
+## VTable ABI
 
 ```c
-typedef void* HulkMethodPtr;
-
 typedef struct HulkVTable {
-    long long type_id;
-    HulkVTable* parent;
-    long long method_count;
-    HulkMethodPtr* methods;
+    long long    type_id;
+    HulkVTable*  parent;        // null for root types
+    long long    method_count;
+    void**       methods;
+    const char*  type_name;
 } HulkVTable;
 ```
 
-`MethodSlot` from Hulk IR indexes into `methods`.
+LLVM struct: `%HulkVTable = type { i64, ptr, i64, ptr, ptr }`
 
-```text
-VirtualCall receiver.StaticType::method#slot(args)
+For each user type the codegen emits:
+
+```llvm
+@vtable_Point = global %HulkVTable { i64 <id>, ptr @vtable_Object,
+                                     i64 <n>, ptr @vtable_Point_methods,
+                                     ptr @name_Point }
 ```
 
-lowers to:
+`hulk_object_method(obj, slot)` loads the vtable from the first word of `obj`
+and returns `vtable->methods[slot]`.
 
-```text
-load receiver->vtable
-load vtable->methods[slot]
-cast function pointer to expected signature
-call function pointer(receiver, args...)
-```
-
-`StaticCall` and `BaseCall` lower to direct LLVM calls. For `BaseCall`, the
-backend calls the known parent method function, bypassing the receiver vtable.
+`hulk_object_is(obj, target_id)` walks the parent chain comparing `type_id`.
+`hulk_object_as(obj, target_id)` calls `is` and returns null on failure.
 
 ## Vector ABI
 
-Initial generic representation:
-
 ```c
-typedef enum HulkValueTag {
-    HULK_VALUE_NUMBER,
-    HULK_VALUE_BOOL,
-    HULK_VALUE_OBJECT,
-    HULK_VALUE_STRING,
-} HulkValueTag;
-
-typedef struct HulkValue {
-    HulkValueTag tag;
-    union {
-        double number;
-        unsigned char boolean;
-        HulkObject* object;
-        HulkString* string;
-    } as;
-} HulkValue;
-
 typedef struct HulkVector {
-    long long len;
-    long long capacity;
-    HulkValue* data;
+    HulkVTable* vtable;   // next=slot0, current=slot1
+    long long   len;
+    long long   capacity;
+    long long*  data;     // unboxed i64 slots, same layout as object attrs
 } HulkVector;
 ```
 
-Required operations:
-
 ```c
 HulkVector* hulk_vector_new(long long capacity);
-void hulk_vector_push(HulkVector* vector, HulkValue value);
-long long hulk_vector_len(HulkVector* vector);
-HulkValue hulk_vector_get(HulkVector* vector, long long index);
-void hulk_vector_set(HulkVector* vector, long long index, HulkValue value);
+void        hulk_vector_push(HulkVector* v, long long value);
+long long   hulk_vector_len(HulkVector* v);
+long long   hulk_vector_get(HulkVector* v, long long index);  // aborts on OOB
+void        hulk_vector_set(HulkVector* v, long long index, long long value); // aborts on OOB
 ```
 
-This generic representation is simple and supports mixed object values. A later
-optimization can specialize `Vector(Number)` into packed `double` arrays.
+Codegen boxes primitive values into `long long` before insertion and unboxes
+after reads according to the statically known element type. Numeric indices
+are cast from `double` to `i64`.
 
-LLVM backend responsibility:
+Vectors are also iterables: the vector vtable places `next` at slot 0 and
+`current` at slot 1, so they work in any `for` loop expecting an `Iterable`.
 
-- box primitive values into `HulkValue` before vector insertion;
-- unbox `HulkValue` after vector reads according to the statically known vector
-  element type;
-- convert HULK numeric indexes to integer indexes. The first backend should cast
-  `double` index values to `i64` after semantic checking.
-
-## Iterable and Range ABI
-
-For now `Iterable(T)` is object-like. The runtime can implement range as an
-object with `next` and `current` method slots compatible with the IR lowering
-for `for` and vector generators.
-
-Required range constructor:
+## Range ABI
 
 ```c
 HulkObject* hulk_range_new(double start, double end);
 ```
 
-Required method behavior:
-
-```text
-next()    -> Boolean
-current() -> Number
-```
-
-The actual methods may be exposed as generated/runtime functions placed into the
-range vtable.
+A range is a heap object with a vtable. Its `next()` (slot 0) advances an
+internal cursor and returns a boolean; its `current()` (slot 1) returns the
+current `double` value. Ranges can be used in `for` loops and vector
+comprehensions wherever an `Iterable(Number)` is expected.
 
 ## Closure ABI
 
-Runtime representation:
-
 ```c
 typedef struct HulkClosure {
-    void* function;
+    void*     function;
     long long capture_count;
-    HulkValue* captures;
+    long long captures[];   // C99 flexible array member
 } HulkClosure;
 ```
 
-Required operations:
-
 ```c
-HulkClosure* hulk_closure_new(void* function, long long capture_count, HulkValue* captures);
+HulkClosure* hulk_closure_alloc(void* fn_ptr, long long capture_count);
+void         hulk_closure_set_capture(HulkClosure* c, long long i, long long value);
+long long    hulk_closure_get_capture(HulkClosure* c, long long i);
 ```
 
-`ClosureCall` lowers by loading the function pointer, casting it to the expected
-signature, and passing the closure environment plus explicit arguments.
+`MakeClosure` in the IR lowers to one `hulk_closure_alloc` call followed by
+one `hulk_closure_set_capture` per captured variable.
 
-Preferred generated lambda signature:
-
-```text
-lambda(args...) in source
-```
-
-lowers to:
-
-```llvm
-define <ret> @lambda_0(ptr %env, <arg0>, <arg1>, ...)
-```
-
-For lambdas without captures, `%env` may be null.
-
-## Type Test and Cast ABI
-
-Each vtable carries a `type_id` and a parent pointer. Type tests walk the parent
-chain:
-
-```c
-unsigned char hulk_is_type(HulkObject* object, long long target_type_id);
-HulkObject* hulk_checked_cast(HulkObject* object, long long target_type_id);
-```
-
-Lowering:
-
-```text
-TypeTest value is T -> hulk_is_type(value, T_id)
-TypeCast value as T -> hulk_checked_cast(value, T_id)
-```
-
-`hulk_checked_cast` should abort with a runtime error if the value is not of the
-target type.
-
-Primitive type tests and casts can be handled directly by the backend when the
-static type is primitive. User-object tests should use runtime type metadata.
-
-## Null, Unit, and Runtime Errors
-
-`Null` maps to a null pointer of the expected pointer type.
-
-`Unit` has no independent runtime representation. If a value is required, use
-null `Object`. If no value is required, emit no result.
-
-Runtime errors should abort with a diagnostic and non-zero exit:
-
-```c
-void hulk_runtime_error(const char* message);
-```
-
-Expected runtime errors include:
-
-- invalid cast;
-- null dereference;
-- vector index out of bounds;
-- invalid closure call;
-- allocation failure.
-
-## Memory Management
-
-The first runtime may intentionally leak heap allocations. This is acceptable
-for compiler validation and short-running test programs.
-
-The ABI should still route allocations through runtime helpers where possible so
-future memory management can be added without changing generated LLVM too much.
-
-## Initial Runtime File Layout
-
-Suggested files:
-
-```text
-runtime/hulk_runtime.h
-runtime/hulk_runtime.c
-```
-
-The header declares exported runtime functions and structs. The C file provides
-the implementation.
-
-## Implementation Milestones
-
-1. Primitive backend:
-   - `Number`, `Boolean`;
-   - arithmetic/comparison/control flow;
-   - user functions and recursion;
-   - `print(Number)`;
-   - math builtins.
-
-2. String runtime:
-   - static string descriptors;
-   - string print;
-   - `@` and `@@`.
-
-3. Vector runtime:
-   - vector allocation;
-   - push/get/set/len;
-   - range and iteration.
-
-4. Object runtime:
-   - object allocation;
-   - generated layouts;
-   - attributes;
-   - direct method calls.
-
-5. Dynamic dispatch:
-   - vtables;
-   - virtual calls;
-   - base calls;
-   - type tests and casts.
-
-6. Closures:
-   - closure allocation;
-   - capture boxing;
-   - closure calls.
-
-## Open Decisions
-
-These decisions should be revisited when implementing the corresponding backend
-stage:
-
-- whether all heap values should share a tagged `HulkValue` representation or
-  only vectors/closures should use boxed values;
-- whether strings and vectors should embed a `HulkObject` header so they can flow
-  through `Object` uniformly;
-- whether generated object layouts should be emitted as LLVM structs or accessed
-  through byte offsets;
-- whether method pointer casts should be generated directly in LLVM or hidden
-  behind runtime helper calls;
-- whether `print` should eventually return a real `Object` value or keep using
-  null `Object` as its result.
+`ClosureCall` loads the function pointer from the closure, then emits an
+indirect call with the capture values prepended to the argument list. Lambdas
+with no captures still receive a (potentially null) env pointer as their
+first argument.

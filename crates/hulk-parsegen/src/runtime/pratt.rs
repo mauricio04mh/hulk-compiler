@@ -45,6 +45,8 @@ pub struct PrattConfig {
     pub semicolon: Option<String>,
     pub function_kw: Option<String>,
     pub let_kw: Option<String>,
+    pub match_kw: Option<String>,
+    pub wildcard: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -897,6 +899,12 @@ impl<'a> PrattState<'a> {
             return self.parse_let_subexpr(tok);
         }
 
+        if let Some(mk) = self.config.match_kw.clone()
+            && tok.kind == mk
+        {
+            return self.parse_match_subexpr(tok);
+        }
+
         Err(ParseError {
             message: "Expected expression".to_string(),
             line: tok.line,
@@ -1562,6 +1570,244 @@ impl<'a> PrattState<'a> {
         }
         children.push(CstNode::node("Expr", vec![val_expr]));
         Ok(CstNode::node("LetBinding", children))
+    }
+
+    // --- Match parsing ---
+
+    fn parse_match_pattern(&mut self, match_tok: &ParseToken) -> Result<CstNode, ParseError> {
+        let curr = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected pattern in match arm".to_string(),
+            line: match_tok.line,
+            column: match_tok.column,
+            found: None,
+            expected: vec!["WILDCARD".to_string(), "IDENT".to_string()],
+        })?;
+
+        // Wildcard: _
+        if let Some(ref wk) = self.config.wildcard.clone()
+            && curr.kind == *wk
+        {
+            self.advance();
+            return Ok(CstNode::node("PatternWildcard", vec![]));
+        }
+
+        // Literal: number, string, true, false
+        if self.config.primary_tokens.contains(&curr.kind)
+            && curr.kind != "IDENT"
+        {
+            self.advance();
+            return Ok(CstNode::node("PatternLiteral", vec![CstNode::token(&curr)]));
+        }
+
+        // Identifier: TypePattern (uppercase first) or Binding (lowercase first)
+        if self.is_identifier_kind(&curr.kind) || curr.kind == "IDENT" {
+            let name_tok = ParseToken::new("IDENT", &curr.lexeme, curr.line, curr.column);
+            self.advance();
+
+            let first_char = curr.lexeme.chars().next().unwrap_or('a');
+            if first_char.is_uppercase() {
+                // TypePattern — optional "as varname" binding
+                if let Some(as_kw) = self.config.as_kw.clone()
+                    && let Some(next) = self.current()
+                    && next.kind == as_kw
+                {
+                    self.advance(); // consume 'as'
+                    let bind_tok = self.current().cloned().ok_or_else(|| ParseError {
+                        message: "Expected identifier after 'as' in pattern".to_string(),
+                        line: curr.line,
+                        column: curr.column,
+                        found: None,
+                        expected: vec!["IDENT".to_string()],
+                    })?;
+                    if !self.is_identifier_kind(&bind_tok.kind) {
+                        return Err(ParseError {
+                            message: "Expected identifier after 'as' in pattern".to_string(),
+                            line: bind_tok.line,
+                            column: bind_tok.column,
+                            found: Some(bind_tok.kind.clone()),
+                            expected: vec!["IDENT".to_string()],
+                        });
+                    }
+                    let bind_ident =
+                        ParseToken::new("IDENT", &bind_tok.lexeme, bind_tok.line, bind_tok.column);
+                    self.advance(); // consume bind name
+                    return Ok(CstNode::node(
+                        "PatternType",
+                        vec![
+                            CstNode::token(&name_tok),
+                            CstNode::node("PatternBind", vec![CstNode::token(&bind_ident)]),
+                        ],
+                    ));
+                }
+                return Ok(CstNode::node("PatternType", vec![CstNode::token(&name_tok)]));
+            } else {
+                // Binding pattern
+                return Ok(CstNode::node(
+                    "PatternBinding",
+                    vec![CstNode::token(&name_tok)],
+                ));
+            }
+        }
+
+        Err(ParseError {
+            message: format!("Unexpected token '{}' in match pattern", curr.lexeme),
+            line: curr.line,
+            column: curr.column,
+            found: Some(curr.kind.clone()),
+            expected: vec!["WILDCARD".to_string(), "IDENT".to_string(), "NUMBER".to_string()],
+        })
+    }
+
+    fn parse_match_subexpr(&mut self, match_tok: ParseToken) -> Result<CstNode, ParseError> {
+        self.advance(); // consume MATCH
+
+        let lparen_kind = self.config.lparen.clone();
+        let rparen_kind = self.config.rparen.clone();
+        let lbrace_kind = self
+            .config
+            .lbrace
+            .clone()
+            .unwrap_or_else(|| "LBRACE".to_string());
+        let rbrace_kind = self
+            .config
+            .rbrace
+            .clone()
+            .unwrap_or_else(|| "RBRACE".to_string());
+        let arrow_kind = self
+            .config
+            .arrow
+            .clone()
+            .unwrap_or_else(|| "ARROW".to_string());
+
+        // Parse scrutinee in parens: (expr)
+        let open_paren = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '(' after 'match'".to_string(),
+            line: match_tok.line,
+            column: match_tok.column,
+            found: None,
+            expected: vec![lparen_kind.clone()],
+        })?;
+        if open_paren.kind != lparen_kind {
+            return Err(ParseError {
+                message: "Expected '(' after 'match'".to_string(),
+                line: open_paren.line,
+                column: open_paren.column,
+                found: Some(open_paren.kind.clone()),
+                expected: vec![lparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume (
+
+        let scrutinee = self.parse_expression_bp(0)?;
+
+        let close_paren = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected ')' after match scrutinee".to_string(),
+            line: match_tok.line,
+            column: match_tok.column,
+            found: None,
+            expected: vec![rparen_kind.clone()],
+        })?;
+        if close_paren.kind != rparen_kind {
+            return Err(ParseError {
+                message: "Expected ')' after match scrutinee".to_string(),
+                line: close_paren.line,
+                column: close_paren.column,
+                found: Some(close_paren.kind.clone()),
+                expected: vec![rparen_kind.clone()],
+            });
+        }
+        self.advance(); // consume )
+
+        // Consume opening {
+        let open_brace = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '{' after match scrutinee".to_string(),
+            line: match_tok.line,
+            column: match_tok.column,
+            found: None,
+            expected: vec![lbrace_kind.clone()],
+        })?;
+        if open_brace.kind != lbrace_kind {
+            return Err(ParseError {
+                message: "Expected '{' after match scrutinee".to_string(),
+                line: open_brace.line,
+                column: open_brace.column,
+                found: Some(open_brace.kind.clone()),
+                expected: vec![lbrace_kind.clone()],
+            });
+        }
+        self.advance(); // consume {
+
+        // Parse arms: pattern => body ,?
+        let mut children = vec![CstNode::node("Expr", vec![scrutinee])];
+
+        loop {
+            // Check for closing brace (no more arms)
+            if let Some(curr) = self.current()
+                && curr.kind == rbrace_kind
+            {
+                break;
+            }
+            if self.current().is_none() {
+                break;
+            }
+
+            let pattern = self.parse_match_pattern(&match_tok)?;
+
+            // Consume =>
+            let arrow_tok = self.current().cloned().ok_or_else(|| ParseError {
+                message: "Expected '=>' after match pattern".to_string(),
+                line: match_tok.line,
+                column: match_tok.column,
+                found: None,
+                expected: vec![arrow_kind.clone()],
+            })?;
+            if arrow_tok.kind != arrow_kind {
+                return Err(ParseError {
+                    message: "Expected '=>' after match pattern".to_string(),
+                    line: arrow_tok.line,
+                    column: arrow_tok.column,
+                    found: Some(arrow_tok.kind.clone()),
+                    expected: vec![arrow_kind.clone()],
+                });
+            }
+            self.advance(); // consume =>
+
+            let body = self.parse_expression_bp(0)?;
+
+            children.push(CstNode::node(
+                "MatchArm",
+                vec![pattern, CstNode::node("Expr", vec![body])],
+            ));
+
+            // Optional trailing comma
+            if let Some(curr) = self.current()
+                && let Some(ref ck) = self.config.comma.clone()
+                && curr.kind == *ck
+            {
+                self.advance(); // consume comma
+            }
+        }
+
+        // Consume closing }
+        let close_brace = self.current().cloned().ok_or_else(|| ParseError {
+            message: "Expected '}' to close match expression".to_string(),
+            line: match_tok.line,
+            column: match_tok.column,
+            found: None,
+            expected: vec![rbrace_kind.clone()],
+        })?;
+        if close_brace.kind != rbrace_kind {
+            return Err(ParseError {
+                message: "Expected '}' to close match expression".to_string(),
+                line: close_brace.line,
+                column: close_brace.column,
+                found: Some(close_brace.kind.clone()),
+                expected: vec![rbrace_kind.clone()],
+            });
+        }
+        self.advance(); // consume }
+
+        Ok(CstNode::node("MatchExpr", children))
     }
 
     // --- Vector parsing ---
@@ -2272,6 +2518,8 @@ mod tests {
             semicolon: None,
             function_kw: None,
             let_kw: None,
+            match_kw: None,
+            wildcard: None,
         })
     }
 

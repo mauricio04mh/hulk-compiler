@@ -302,6 +302,8 @@ fn hulk_pratt_parser() -> PrattParser {
         semicolon: Some("SEMICOLON".to_string()),
         function_kw: Some("FUNCTION".to_string()),
         let_kw: Some("LET".to_string()),
+        match_kw: Some("MATCH".to_string()),
+        wildcard: Some("WILDCARD".to_string()),
     })
 }
 

@@ -296,7 +296,7 @@ fn analyze_program_unknown_method_reports_error() {
     let errors = analyze_program(&program).expect_err("analysis should fail");
 
     assert!(errors.iter().any(|error| {
-        matches!(error, SemanticError::UndefinedMethod { type_name, method_name }
+        matches!(error, SemanticError::UndefinedMethod { type_name, method_name, .. }
             if type_name == "A" && method_name == "missing")
     }));
 }
@@ -434,7 +434,7 @@ fn check_program_and_analyze_program_both_accept_valid_program() {
 fn migrated_check_program_reports_undefined_variable() {
     assert_analysis_and_check_error(
         "x;",
-        |error| matches!(error, SemanticError::UndefinedVariable { name } if name == "x"),
+        |error| matches!(error, SemanticError::UndefinedVariable { name, .. } if name == "x"),
     );
 }
 
@@ -442,7 +442,7 @@ fn migrated_check_program_reports_undefined_variable() {
 fn migrated_check_program_reports_undefined_function() {
     assert_analysis_and_check_error(
         "missing();",
-        |error| matches!(error, SemanticError::UndefinedFunction { name } if name == "missing"),
+        |error| matches!(error, SemanticError::UndefinedFunction { name, .. } if name == "missing"),
     );
 }
 
@@ -500,7 +500,7 @@ fn migrated_check_program_reports_attribute_is_private() {
 #[test]
 fn migrated_check_program_reports_undefined_method() {
     assert_analysis_and_check_error("type A {}\nnew A().missing();", |error| {
-        matches!(error, SemanticError::UndefinedMethod { type_name, method_name }
+        matches!(error, SemanticError::UndefinedMethod { type_name, method_name, .. }
             if type_name == "A" && method_name == "missing")
     });
 }

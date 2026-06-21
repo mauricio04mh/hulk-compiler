@@ -23,7 +23,8 @@ fn case_b_undefined_variable() {
     assert_eq!(
         err,
         SemanticError::UndefinedVariable {
-            name: "x".to_string()
+            name: "x".to_string(),
+            span: hulk_frontend::ast::Span::default(),
         }
     );
 }
@@ -77,7 +78,8 @@ fn case_i_undefined_variable_in_let_binding() {
     assert_eq!(
         err,
         SemanticError::UndefinedVariable {
-            name: "x".to_string()
+            name: "x".to_string(),
+            span: hulk_frontend::ast::Span::default(),
         }
     );
 }
@@ -93,7 +95,8 @@ fn case_k_assignment_undefined() {
     assert_eq!(
         err,
         SemanticError::UndefinedVariable {
-            name: "x".to_string()
+            name: "x".to_string(),
+            span: hulk_frontend::ast::Span::default(),
         }
     );
 }

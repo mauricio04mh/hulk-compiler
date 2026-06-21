@@ -587,7 +587,9 @@ impl LoweringContext {
                 return_type,
                 body,
             } => self.lower_lambda(expr, params, return_type, body, builder),
-            HirExprKind::For { .. } => Err(LowerError::UnsupportedExpression { kind: "For" }),
+            // `for` is desugared to `Let { bindings: [iter], body: While { ... } }` by the
+            // HIR builder, so this arm is unreachable in practice.
+            HirExprKind::For { .. } => unreachable!("for is desugared to let+while in HIR builder"),
         }
     }
 

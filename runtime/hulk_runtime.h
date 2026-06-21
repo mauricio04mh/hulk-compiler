@@ -22,6 +22,7 @@ typedef struct HulkVTable {
     struct HulkVTable* parent;
     int64_t            method_count;
     void**             methods;
+    const char*        type_name;
 } HulkVTable;
 
 /* ── Print ───────────────────────────────────────────────────────────── */
@@ -29,16 +30,20 @@ typedef struct HulkVTable {
 void hulk_print_number(double value);
 void hulk_print_bool(unsigned char value);
 void hulk_print_string(HulkString* value);
-void hulk_print_object(void);
+void hulk_print_object(void* obj);
+void hulk_runtime_init(void);
 
 /* ── String operations ───────────────────────────────────────────────── */
 
+int64_t     hulk_string_len(HulkString* s);
+HulkString* hulk_string_sub(HulkString* s, int64_t start, int64_t end);
 HulkString* hulk_string_concat(HulkString* a, HulkString* b);
 int         hulk_string_eq(HulkString* a, HulkString* b);
 int8_t      hulk_string_equals(HulkString* a, HulkString* b);
 HulkString* hulk_string_from_number(double value);
 HulkString* hulk_string_from_bool(int8_t value);
 void        hulk_runtime_error(HulkString* msg);
+void        hulk_abort(const char* msg);
 
 /* ── Math ────────────────────────────────────────────────────────────── */
 
@@ -49,6 +54,12 @@ double hulk_exp(double value);
 double hulk_log(double base, double value);
 double hulk_pow(double value, double exponent);
 double hulk_rand(void);
+double hulk_abs(double value);
+double hulk_floor(double value);
+double hulk_ceil(double value);
+double hulk_round(double value);
+double hulk_min(double a, double b);
+double hulk_max(double a, double b);
 
 /* ── Legacy type descriptor ───────────────────────────────────────────── */
 

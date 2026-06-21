@@ -1,0 +1,665 @@
+\documentclass[12pt,letterpaper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage{float}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+\definecolor{codegray}{gray}{0.96}
+\definecolor{keywordblue}{rgb}{0.05,0.19,0.45}
+
+\lstdefinelanguage{HULK}{
+    keywords={function,define,type,inherits,new,self,base,let,in,true,false,if,elif,else,while,for,is,as,protocol,interface,extends,print},
+    sensitive=true,
+    comment=[l]{//},
+    string=[b]"
+}
+
+\lstdefinelanguage{IR}{
+    keywords={type,attr,method,data,function,entry,param,local,temp,label,jump,branch,return,call,static_call,vcall,base_call,allocate,getattr,setattr,vector,vector_get,vector_push,vector_set,vector_len,closure,closure_call,get_capture,type_test,type_cast},
+    sensitive=true,
+    comment=[l]{\#},
+    string=[b]"
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\bfseries\color{keywordblue},
+    backgroundcolor=\color{codegray},
+    breaklines=true,
+    frame=single,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false,
+    literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1 {ñ}{{\~n}}1 {Ñ}{{\~N}}1
+}
+
+\newcommand{\repo}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\estado}[1]{\textbf{#1}}
+\newcommand{\hulk}{\textsc{HULK}}
+\newcommand{\irname}{Hulk IR}
+
+\title{Informe Final del Compilador de \hulk\\
+\large Frontend, análisis semántico, representación intermedia, backend LLVM y runtime}
+
+\author{
+Camilo Pérez Fleita\\
+Guillermo Hugues Cardona\\
+Mauricio Medina Hernández\\[0.5em]
+\textit{Proyecto de Compilación / Lenguajes de Programación}
+}
+
+\date{20 de junio de 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Este informe presenta el diseño, la implementación y el estado alcanzado por nuestro compilador de \hulk{}, desarrollado en el repositorio \repo{mauricio04mh/hulk-compiler}. El documento resume el trabajo realizado por el equipo: la arquitectura modular del workspace Rust, el frontend léxico y sintáctico, el AST, el análisis semántico, la HIR tipada, el lowering a una representación intermedia propia, la generación de LLVM IR y el runtime en C. También se explican las extensiones que incorporamos, entre ellas la inferencia semántica iterativa, los protocolos, los arreglos y vectores, las lambdas, las closures y la integración del driver con \repo{clang}. La intención del informe es dejar constancia técnica de lo que implementamos, cómo lo organizamos, qué decisiones tomamos y qué limitaciones quedaron identificadas para continuar el desarrollo.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Introducción}
+
+Construir un compilador para \hulk{} no consiste solamente en transformar texto de entrada en otro texto de salida. El objetivo real es preservar el significado del programa a través de varias capas de representación. Un programa fuente con expresiones, funciones, objetos, herencia, protocolos, iterables y operaciones de tipo debe convertirse gradualmente en estructuras internas verificables y, finalmente, en código de bajo nivel que pueda ejecutarse con ayuda de un runtime.
+
+El proyecto adopta una arquitectura por fases. Primero, el frontend reconoce tokens y estructura sintáctica; después, el AST elimina detalles de la gramática concreta; luego, la fase semántica resuelve nombres, scopes, tipos, atributos, métodos, \repo{self}, \repo{base} y builtins; más adelante, la HIR conserva la estructura de alto nivel pero ya tipada; el lowering transforma esa HIR en una representación intermedia propia; finalmente, el backend LLVM emite un módulo enlazable con una biblioteca C de soporte.
+
+En la versión final del proyecto consolidamos un pipeline más completo que el prototipo inicial. El driver no se limita a imprimir dumps de depuración: si se ejecuta sin flags, compila el programa a \repo{output} mediante \repo{clang}; además, conserva flags para inspeccionar AST, chequeo semántico, HIR, IR y LLVM IR. También incorporamos instrucciones y soporte de runtime para vectores, rangos y closures, y ampliamos la semántica con pasadas iterativas de inferencia de tipos para funciones, métodos y constructores.
+
+Este informe distingue cuidadosamente entre tres niveles de soporte:
+
+\begin{enumerate}[label=\arabic*.]
+    \item soporte sintáctico, cuando una construcción se reconoce y se representa en AST;
+    \item soporte semántico e intermedio, cuando la construcción se valida y se baja a HIR/IR;
+    \item soporte ejecutable, cuando el backend LLVM y el runtime permiten producir un binario funcional.
+\end{enumerate}
+
+Esta separación es esencial para evaluar correctamente el estado del compilador. Varias características avanzadas ya existen en AST, HIR e IR, pero su ejecución final todavía depende de completar o endurecer partes del backend y del runtime.
+
+% ============================================================
+\section{Objetivos y alcance}
+
+\subsection{Objetivo general}
+
+El objetivo general del proyecto es implementar un compilador modular para \hulk{} capaz de leer programas fuente, analizarlos, validarlos semánticamente, traducirlos a una representación intermedia propia y generar LLVM IR enlazable con un runtime escrito en C. La meta no es solamente obtener un ejecutable, sino construir un pipeline defendible, inspeccionable y probado por capas.
+
+\subsection{Objetivos específicos}
+
+\begin{enumerate}[label=\arabic*.]
+    \item Implementar un frontend reutilizable a partir de especificaciones léxicas y gramaticales.
+    \item Construir un AST expresivo para declaraciones, expresiones, tipos, protocolos, funciones, métodos, vectores, lambdas y operaciones de objetos.
+    \item Resolver nombres y scopes, incluyendo variables locales, parámetros, builtins, funciones globales, atributos, métodos, \repo{self} y \repo{base}.
+    \item Implementar chequeo e inferencia de tipos sobre primitivos, tipos de usuario, protocolos, vectores, iterables y functors.
+    \item Producir una HIR tipada como contrato entre semántica y lowering.
+    \item Diseñar una IR propia de tres direcciones, con secciones de tipos, datos y código.
+    \item Emitir LLVM IR para el subconjunto ejecutable y delegar operaciones complejas al runtime.
+    \item Ofrecer una interfaz de línea de comandos que permita tanto compilar como depurar cada fase.
+    \item Documentar decisiones, limitaciones y caminos de mejora.
+\end{enumerate}
+
+\subsection{Alcance real de la entrega}
+
+Nuestra implementación cubre con mayor solidez el frontend, la semántica y el lowering. La IR es amplia: modela control de flujo, llamadas, objetos, atributos, vtables, vectores, rangos, closures, capturas, type tests y casts. El backend LLVM también avanzó: ahora declara y emite llamadas de runtime para strings, objetos, rangos, vectores y closures. Sin embargo, el runtime y el backend siguen siendo minimalistas, por lo que presentamos el proyecto como un compilador incremental, no como una implementación industrial completa de todo \hulk{}.
+
+\subsection{Resumen de estado}
+
+{\small\begin{longtable}{p{3.05cm}p{3.15cm}p{2.75cm}p{5.05cm}}
+\toprule
+\textbf{Requisito} & \textbf{Evidencia en el repositorio} & \textbf{Estado} & \textbf{Comentario técnico} \\
+\midrule
+Lenguaje de implementación & Workspace Rust y runtime C & \estado{Cumplido} & El compilador principal está en Rust; el soporte de ejecución se implementa en C. \\
+Frontend & \repo{hulk-lexgen}, \repo{hulk-parsegen}, \repo{hulk-frontend} & \estado{Cumplido} & Lexer, parser LL(1), Pratt parser y AST builder están separados. \\
+Semántica & \repo{hulk-sema} & \estado{Cumplido amplio} & Hay TypeRegistry, scopes, HIR tipada, inferencia iterativa y validación de protocolos. \\
+IR propia & \repo{hulk-ir}, \repo{hulk-lower} & \estado{Cumplido} & La IR usa \repo{.TYPES}, \repo{.DATA} y \repo{.CODE}, con instrucciones para objetos, vectores y closures. \\
+Backend LLVM & \repo{hulk-codegen-llvm} & \estado{Parcial avanzado} & Emite LLVM IR y declara ABI para runtime; aún requiere endurecimiento en características avanzadas. \\
+Runtime & \repo{runtime/}\newline\repo{hulk_runtime.c} & \estado{Parcial funcional} & Implementa strings, matemáticas, objetos, vtables, vectores, rangos y closures de forma mínima. \\
+CLI & \repo{hulk-driver} & \estado{Cumplido} & Sin flags compila a \repo{./output}; con flags permite depurar AST, HIR, IR y LLVM. \\
+CI & \repo{workflow CI} & \estado{Cumplido base} & El workflow ejecuta pruebas del workspace. \\
+README & \repo{README.md} & \estado{Pendiente} & El README quedó pendiente; debe completarse como parte del cierre documental de la entrega. \\
+\bottomrule
+\end{longtable}}
+
+% ============================================================
+\section{Descripción técnica del lenguaje \hulk}
+
+\subsection{Lenguaje basado en expresiones}
+
+\hulk{} es un lenguaje en el que casi todas las construcciones relevantes producen un valor. La expresión final del archivo actúa como punto de entrada del programa. Por eso, el compilador debe asignar tipo y valor resultante a expresiones simples y compuestas: literales, llamadas, bloques, \repo{let}, condicionales, ciclos, creación de objetos, acceso a miembros, indexación y lambdas.
+
+\begin{lstlisting}[language=HULK,caption={Ejemplos de expresiones en HULK}]
+print(42);
+
+let x: Number = 5 in x + 1;
+
+if (x > 0) "positive" else "non-positive";
+
+{
+    print("hello");
+    x + 2;
+}
+\end{lstlisting}
+
+\subsection{Funciones globales y builtins}
+
+El lenguaje permite declarar funciones globales antes de la expresión principal. Las funciones pueden tener anotaciones de tipo en parámetros y retorno, aunque nuestra implementación también intenta inferir tipos cuando faltan anotaciones. El compilador registra las firmas antes de analizar los cuerpos, lo que permite llamadas hacia funciones declaradas después y soporta recursión.
+
+\begin{lstlisting}[language=HULK,caption={Función global recursiva}]
+function fact(n: Number): Number =>
+    if (n <= 1) 1 else n * fact(n - 1);
+
+print(fact(5));
+\end{lstlisting}
+
+Entre los builtins aparecen \repo{print}, \repo{sqrt}, \repo{sin}, \repo{cos}, \repo{exp}, \repo{log}, \repo{rand}, \repo{range}, \repo{PI} y \repo{E}. En el backend LLVM, estos nombres se mapean a funciones del runtime, por ejemplo \repo{hulk_print_number}, \repo{hulk_sqrt}, \repo{hulk_log} y \repo{hulk_range}.
+
+\subsection{Tipos, objetos y métodos}
+
+El modelo nominal de objetos se basa en \repo{type}, atributos, métodos y herencia simple. Los atributos se inicializan dentro del tipo y los métodos reciben \repo{self} de manera implícita. En la IR, \repo{self} se vuelve un parámetro explícito para las funciones de método.
+
+\begin{lstlisting}[language=HULK,caption={Tipo con atributos y métodos}]
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    getX(): Number => self.x;
+    getY(): Number => self.y;
+}
+
+let p = new Point(3, 4) in print(p.getX());
+\end{lstlisting}
+
+La fase semántica valida que no existan duplicados incompatibles, que los tipos mencionados existan, que los argumentos de constructores tengan aridad y tipo correctos, que \repo{self} se use en el contexto adecuado y que el acceso a atributos respete las reglas de encapsulación.
+
+\subsection{Herencia, despacho dinámico y \repo{base}}
+
+Los tipos pueden heredar de otros tipos de usuario. El compilador valida que no se herede de \repo{Number}, \repo{String} ni \repo{Boolean}; también detecta ciclos de herencia y verifica que las redefiniciones de métodos preserven la firma del padre. Los métodos son virtuales por diseño, por lo que el lowering asigna slots de método y el backend produce tablas virtuales.
+
+La expresión \repo{base(...)} se resuelve durante el análisis semántico al método correspondiente del padre. En IR aparece como \repo{BaseCall}, lo que evita repetir búsqueda dinámica en el backend.
+
+\subsection{Protocolos, iterables y functors}
+
+Implementamos protocolos como tipos estructurales de tiempo de compilación. Un protocolo contiene firmas de métodos; un tipo conforma al protocolo si implementa esos métodos con aridad y tipos compatibles. La conformidad se valida con covarianza en retornos y contravarianza en parámetros.
+
+El protocolo \repo{Iterable} se registra como builtin si el usuario no lo define. Requiere \repo{next(): Boolean} y \repo{current(): Object}. Esta decisión permite modelar \repo{for}, rangos y vectores como iterables.
+
+La implementación también representa functors y lambdas. Los tipos de functor se modelan como \repo{(T1, T2) -> R} en la sintaxis y como \repo{Functor} en el sistema de tipos. En la IR actual se agregaron tipos de captura para closures, lo que mejora el contrato entre lowering y backend.
+
+\subsection{Extensiones implementadas por el equipo}
+
+Además del núcleo esperado, implementamos soporte sintáctico para \repo{define}, \repo{interface} como alias de protocolo, funciones lambda, arreglos con \repo{new T[n]}, arreglos bidimensionales mediante \repo{new T[][n]}, inicializadores de arreglo con la forma \repo{{ i -> expr }}, vectores literales, indexación, generadores e instrucciones de closure. Estas extensiones no quedaron solamente como azúcar sintáctica: atraviesan lexer, parser, AST, semántica, IR y runtime, por lo que forman parte real del diseño del compilador.
+
+% ============================================================
+\section{Arquitectura del repositorio}
+
+\subsection{Workspace Rust}
+
+La raíz del proyecto define un workspace con ocho crates principales. Esta división evita un compilador monolítico y facilita pruebas por fase.
+
+\begin{longtable}{p{4.0cm}p{10.3cm}}
+\toprule
+\textbf{Crate o carpeta} & \textbf{Responsabilidad principal} \\
+\midrule
+\repo{hulk-lexgen} & Generación y runtime de lexer a partir de especificaciones \repo{.lx}. \\
+\repo{hulk-parsegen} & Generación de parser, cálculo FIRST/FOLLOW, tabla LL(1), parser runtime y Pratt parser. \\
+\repo{hulk-frontend} & API pública de parseo, pipeline cacheado, conversión de tokens a CST y construcción de AST. \\
+\repo{hulk-sema} & Resolución de nombres, registro de tipos, chequeo e inferencia semántica, HIR tipada. \\
+\repo{hulk-ir} & Modelo de IR propia: tipos, datos, funciones, instrucciones, valores y formato textual. \\
+\repo{hulk-lower} & Traducción desde \repo{SemanticProgram/HIR} hacia \repo{IrProgram}. \\
+\repo{hulk-codegen-llvm} & Emisión textual de LLVM IR y adaptación de instrucciones a llamadas de runtime. \\
+\repo{hulk-driver} & Binario \repo{hulkc}; integra frontend, semántica, lowering, LLVM y compilación con \repo{clang}. \\
+\repo{runtime/} & Biblioteca C con soporte para strings, matemáticas, objetos, vtables, vectores, rangos y closures. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Pipeline de compilación}
+
+\begin{lstlisting}[language=IR,caption={Pipeline de alto nivel}]
+archivo .hulk
+  -> lexer generado desde .lx
+  -> tokens
+  -> parser LL(1) + Pratt parser
+  -> CST
+  -> AST Builder
+  -> AST Program
+  -> analyze_program / check_program
+  -> SemanticProgram + HIR tipada + TypeRegistry
+  -> lower_program
+  -> Hulk IR (.TYPES, .DATA, .CODE)
+  -> LLVM IR
+  -> clang + runtime/hulk_runtime.c
+  -> ejecutable ./output
+\end{lstlisting}
+
+El driver usa \repo{parse_hulk_types_program} como entrada principal. Luego, dependiendo del modo, muestra estructuras intermedias o compila hasta binario.
+
+\subsection{Ventajas de la separación por fases}
+
+La arquitectura actual tiene tres ventajas importantes:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{Depuración localizada.} Cada fase puede inspeccionarse con flags: AST, chequeo, HIR, IR y LLVM.
+    \item \textbf{Contratos claros.} El lowering consume HIR tipada y no debe repetir validaciones de alto nivel.
+    \item \textbf{Crecimiento incremental.} Nuevas construcciones pueden entrar primero en AST/HIR/IR y después en LLVM/runtime.
+\end{enumerate}
+
+El costo de esta arquitectura es que hay que mantener sincronizadas varias representaciones. Por ejemplo, agregar arreglos no solo exige una regla sintáctica: también requiere nodos AST, tipos semánticos, instrucciones IR, emisión LLVM y soporte en runtime.
+
+% ============================================================
+\section{Frontend}
+
+\subsection{Generación léxica}
+
+El lexer se define mediante archivos \repo{.lx}. La especificación actual de \hulk{} reconoce palabras clave como \repo{function}, \repo{define}, \repo{type}, \repo{inherits}, \repo{new}, \repo{self}, \repo{base}, \repo{let}, \repo{if}, \repo{while}, \repo{for}, \repo{protocol}, \repo{interface} y \repo{extends}. También define operadores como \repo{@@}, \repo{@}, \repo{==}, \repo{!=}, \repo{<=}, \repo{:=}, \repo{=>}, \repo{->}, paréntesis, llaves, corchetes, identificadores, números, strings, whitespace y comentarios de línea.
+
+Esta separación permite que el lenguaje crezca sin reescribir manualmente un lexer completo. Además, las posiciones de tokens se conservan para producir errores útiles.
+
+\subsection{Parser LL(1) y Pratt parser}
+
+El parser combina una gramática LL(1) para la estructura general del programa con un Pratt parser para expresiones. Esta decisión es adecuada porque muchas expresiones de \hulk{} tienen precedencias, asociatividad, llamadas encadenadas, acceso por punto, indexación, casts, type tests y lambdas. Tratar todas esas reglas solo con LL(1) volvería la gramática más rígida y difícil de mantener.
+
+La gramática actual reconoce declaraciones de funciones con \repo{function} y \repo{define}; tipos con \repo{type}; protocolos con \repo{protocol} e \repo{interface}; y expresiones de control como \repo{if}, \repo{while}, \repo{for} y \repo{let}. El Pratt parser se encarga de operadores, llamadas, \repo{new}, \repo{self}, \repo{base}, vectores, indexación, lambdas y arreglos.
+
+\subsection{AST}
+
+El AST es la primera representación estable del lenguaje. Contiene un \repo{Program} con una lista de declaraciones y una expresión de entrada. Las declaraciones pueden ser funciones, tipos o protocolos. Las expresiones incluyen literales, variables, operadores, asignaciones, \repo{let}, llamadas, bloques, condicionales, ciclos, creación de objetos, llamadas a métodos, type tests, casts, vectores, arreglos, indexación y lambdas.
+
+En el AST incorporamos \repo{FunctionDecl::is_macro}, que distingue funciones regulares de declaraciones \repo{define}. También agregamos \repo{Expr::NewVector}, con tipo de elemento, tamaño e inicializador opcional. Con esto, la extensión de arreglos no queda solamente en la gramática, sino que tiene representación explícita dentro de la estructura abstracta del programa.
+
+\subsection{Errores sintácticos y separación de modos}
+
+El driver distingue errores léxicos de errores sintácticos. Si el frontend devuelve mensajes asociados a lexing, el proceso sale con código 1; si el error es sintáctico, sale con código 2. Esta separación ayuda a la evaluación automática y a la depuración, porque no mezcla categorías de error que pertenecen a fases distintas.
+
+% ============================================================
+\section{Análisis semántico e HIR}
+
+\subsection{Responsabilidades de \repo{hulk-sema}}
+
+La fase semántica es el centro de las garantías del compilador. Sus tareas principales son:
+
+\begin{itemize}
+    \item registrar funciones, tipos, protocolos y builtins;
+    \item construir el \repo{TypeRegistry};
+    \item resolver scopes y símbolos locales;
+    \item validar aridad y tipos en llamadas;
+    \item validar constructores, atributos y métodos;
+    \item resolver \repo{self}, \repo{base}, atributos y despacho de métodos;
+    \item verificar herencia, ciclos y override de métodos;
+    \item comprobar conformidad de protocolos;
+    \item inferir tipos cuando faltan anotaciones;
+    \item producir HIR tipada.
+\end{itemize}
+
+\subsection{TypeRegistry}
+
+\repo{TypeRegistry} almacena información de tipos y protocolos: nombre, parámetros de constructor, padre, atributos, métodos, protocolos y firmas. Su construcción ocurre en varias pasadas. Primero se recogen nombres para permitir referencias adelantadas; luego se rellenan detalles; después se propagan parámetros de constructor en herencia pasante; finalmente se registra \repo{Iterable} si no fue definido por el usuario.
+
+La validación de herencia comprueba padres inexistentes, herencia desde primitivos, ciclos y firmas de override. Para protocolos, se valida que los tipos que heredan de un protocolo implementen los métodos esperados con aridad y tipos compatibles.
+
+\subsection{Inferencia iterativa}
+
+Una mejora relevante de nuestra semántica es que el \repo{HirBuilder} ejecuta pasadas iterativas. En cada pasada conserva firmas inferidas de funciones, métodos y constructores; si una firma cambia, se repite el análisis. Solo cuando no hay cambios se ejecuta una pasada final que reporta errores de parámetros no resueltos.
+
+Este diseño permite inferir parámetros no anotados a partir de restricciones del cuerpo y de sitios de llamada. Por ejemplo, si una función usa un parámetro en una suma numérica, el compilador puede refinarlo a \repo{Number}. Si una llamada pasa un argumento concreto a una función con firma parcial, la firma puede refinarse desde el sitio de uso.
+
+\subsection{HIR tipada}
+
+La HIR es una representación de alto nivel, pero con datos semánticos resueltos. Cada \repo{HirExpr} tiene un \repo{HirId}, un \repo{Span}, un tipo y una variante de expresión. Las variables se resuelven a \repo{SymbolId}; las llamadas se clasifican como builtin, función global o functor local; las llamadas a métodos incluyen \repo{DispatchKind}; y los accesos a atributos incluyen \repo{ResolvedMember}.
+
+El objetivo de la HIR no es ejecutarse directamente. Su función es fijar las decisiones semánticas para que \repo{hulk-lower} no tenga que repetir búsqueda de nombres ni chequeo de tipos.
+
+\subsection{Errores semánticos}
+
+La enumeración de errores semánticos cubre casos como funciones duplicadas, parámetros duplicados, símbolos indefinidos, métodos indefinidos, objetivos de asignación inválidos, errores de aridad, tipos desconocidos, incompatibilidades de tipos, operandos inválidos, condiciones no booleanas, retornos incorrectos, argumentos incorrectos, inferencia fallida, herencia circular, métodos faltantes de protocolos, acceso a atributos privados, herencia desde primitivos y firmas incompatibles en override.
+
+Esta variedad de errores es importante porque demuestra que el compilador no se limita a aceptar ejemplos correctos: también rechaza programas inválidos con diagnósticos diferenciados.
+
+% ============================================================
+\section{Representación intermedia y lowering}
+
+\subsection{Motivación de la IR propia}
+
+La IR propia funciona como puente entre la HIR semántica y el backend LLVM. No es BANNER puro, pero sí conserva una filosofía similar: hacer explícitos los valores intermedios, el control de flujo, las llamadas, los layouts lógicos y las operaciones de runtime. La IR evita depender directamente de la sintaxis fuente y tampoco se compromete con detalles finales de memoria de LLVM.
+
+\subsection{Forma general del programa IR}
+
+Un \repo{IrProgram} contiene:
+
+\begin{itemize}
+    \item \repo{types}: layouts lógicos de tipos;
+    \item \repo{data}: datos estáticos, especialmente strings;
+    \item \repo{functions}: funciones, métodos, lambdas y entry;
+    \item \repo{entry}: identificador de la función de entrada.
+\end{itemize}
+
+Textualmente se imprime en tres secciones:
+
+\begin{lstlisting}[language=IR,caption={Estructura textual de la IR}]
+.TYPES
+  type Point #0 {
+    attr #0 x: Number
+    attr #1 y: Number
+    method #0 getX : Point_getX
+  }
+
+.DATA
+  data @s0 = "hello"
+
+.CODE
+  entry #0
+  function entry #0 -> Object {
+    ...
+  }
+\end{lstlisting}
+
+\subsection{Instrucciones principales}
+
+La IR usa valores de lectura y lugares de escritura. Los \repo{IrValue} incluyen temporales, locales, parámetros, constantes, referencias a datos, \repo{null} y \repo{unit}. Los \repo{IrPlace} son destinos de escritura: temporales y locales.
+
+Entre las instrucciones principales aparecen:
+
+\begin{itemize}
+    \item movimiento: \repo{Assign};
+    \item operaciones: \repo{Unary}, \repo{Binary};
+    \item control: \repo{Label}, \repo{Jump}, \repo{Branch}, \repo{Return};
+    \item llamadas: \repo{Call}, \repo{StaticCall}, \repo{VirtualCall}, \repo{BaseCall};
+    \item objetos: \repo{Allocate}, \repo{GetAttr}, \repo{SetAttr};
+    \item vectores: \repo{NewVector}, \repo{VectorLen}, \repo{VectorPush}, \repo{VectorGet}, \repo{VectorSet};
+    \item closures: \repo{MakeClosure}, \repo{ClosureCall}, \repo{GetCapture};
+    \item tipos dinámicos: \repo{TypeTest}, \repo{TypeCast}.
+\end{itemize}
+
+Agregamos \repo{GetCapture} para separar explícitamente la lectura de variables capturadas dentro de closures. Además, \repo{IrTypeRef::Functor} conserva \repo{capture_types}, lo que mejora el contrato con el backend.
+
+\subsection{Lowering de objetos y métodos}
+
+El lowering crea layouts de tipos, hereda atributos del padre y conserva slots de métodos. Si un método redefine uno del padre, ocupa el mismo slot y actualiza la función destino. Esta decisión prepara el despacho dinámico para vtables.
+
+Las llamadas a métodos se bajan según el \repo{DispatchKind}. Una llamada virtual se convierte en \repo{VirtualCall}; una llamada estática se convierte en \repo{StaticCall}; y una llamada a \repo{base} se convierte en \repo{BaseCall}.
+
+\subsection{Lowering de vectores, rangos y ciclos}
+
+Los vectores literales se convierten en \repo{NewVector}. La indexación se baja como \repo{VectorGet}. Los generadores de vectores y los \repo{for} se relacionan con el protocolo \repo{Iterable}: se llama a \repo{next} y \repo{current}, usando slots conocidos. En runtime, \repo{range} produce un objeto iterable con vtable propia.
+
+\subsection{Lowering de lambdas y closures}
+
+Las lambdas se bajan a funciones separadas. El lowering identifica capturas, genera una función \repo{lambda_N}, construye una closure con \repo{MakeClosure} y usa \repo{ClosureCall} para invocarla. Esta decisión separa el cuerpo de la lambda del entorno capturado, lo cual es la estrategia usual en compiladores con funciones anónimas.
+
+% ============================================================
+\section{Backend LLVM y runtime}
+
+\subsection{Emisión de LLVM IR}
+
+El crate \repo{hulk-codegen-llvm} convierte \repo{IrProgram} en un módulo textual de LLVM. Declara funciones externas del runtime para impresión, matemáticas, strings, objetos, vtables, type tests, casts, rangos, vectores y closures. Luego emite datos estáticos, vtables, funciones del programa y una función \repo{main} C-compatible que llama a \repo{hulk_entry}.
+
+\subsection{Tipos en LLVM}
+
+El mapeo general es el siguiente:
+
+\begin{longtable}{p{4cm}p{4cm}p{6cm}}
+\toprule
+\textbf{Tipo IR} & \textbf{Tipo LLVM} & \textbf{Comentario} \\
+\midrule
+\repo{Number} & \repo{double} & Operaciones aritméticas y comparaciones numéricas. \\
+\repo{Boolean} & \repo{i1} & Se convierte a \repo{i8} en fronteras con C cuando hace falta. \\
+\repo{String} & \repo{ptr} & Puntero a descriptor \repo{HulkString}. \\
+\repo{Object} y \repo{User(T)} & \repo{ptr} & Punteros a objetos con vtable. \\
+\repo{Vector(T)} & \repo{ptr} & Puntero a \repo{HulkVector}. \\
+\repo{Iterable(T)} & \repo{ptr} & Objeto iterable con vtable. \\
+\repo{Functor} & \repo{ptr} & Closure o valor invocable. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Runtime en C}
+
+La carpeta \repo{runtime/} contiene \repo{hulk_runtime.h} y \repo{hulk_runtime.c}. El runtime implementa:
+
+\begin{itemize}
+    \item impresión de números, booleanos, strings y objetos;
+    \item funciones matemáticas: \repo{sqrt}, \repo{sin}, \repo{cos}, \repo{exp}, \repo{log}, \repo{pow}, \repo{rand};
+    \item concatenación e igualdad de strings;
+    \item objetos con vtable y arreglo lógico de atributos;
+    \item acceso a métodos por slot;
+    \item type tests y casts sobre la cadena de vtables;
+    \item vectores con datos \repo{int64_t}, capacidad, longitud y cursor;
+    \item rangos como iterables con \repo{next} y \repo{current};
+    \item closures con puntero a función y arreglo flexible de capturas.
+\end{itemize}
+
+El runtime es intencionalmente pequeño. No implementa garbage collection ni un sistema de valores universal completamente seguro. Para una entrega académica, esto es aceptable si se documenta como limitación y si los ejemplos de prueba permanecen dentro del subconjunto soportado.
+
+\subsection{Driver y compilación final}
+
+El binario \repo{hulkc} tiene dos modos. Sin flags, compila el programa y produce \repo{./output}. Con flags, imprime representaciones intermedias. El modo de compilación ejecuta el pipeline completo, escribe \repo{output.ll}, invoca \repo{clang} con \repo{runtime/hulk_runtime.c}, enlaza \repo{-lm} y elimina el archivo temporal.
+
+\begin{lstlisting}[language=IR,caption={Uso esperado del driver}]
+hulkc programa.hulk          # compila y produce ./output
+hulkc programa.hulk --ast    # muestra AST
+hulkc programa.hulk --check  # ejecuta chequeo semántico
+hulkc programa.hulk --hir    # muestra HIR
+hulkc programa.hulk --ir     # muestra Hulk IR
+hulkc programa.hulk --emit-llvm # muestra LLVM IR
+\end{lstlisting}
+
+\subsection{Makefile}
+
+Incluimos un \repo{Makefile} con tres objetivos: \repo{build}, \repo{clean} y \repo{test}. El objetivo \repo{build} compila \repo{hulk-driver} en modo release y copia el binario a \repo{./hulk}. El objetivo \repo{test} depende de \repo{build} y ejecuta \repo{tests/hulk/run_tests.sh}. La carpeta \repo{/tests/} se reserva para la suite de evaluación, por lo que no necesariamente forma parte del código fuente versionado.
+
+% ============================================================
+\section{Estrategia de pruebas y validación}
+
+\subsection{Pruebas por capas}
+
+El proyecto usa una estrategia natural de pruebas por fases:
+
+\begin{itemize}
+    \item pruebas de lexer y parser para validar tokens, gramática y errores;
+    \item pruebas de frontend para confirmar formas AST esperadas;
+    \item pruebas semánticas para programas válidos e inválidos;
+    \item golden tests de IR para estabilizar el lowering;
+    \item pruebas del backend LLVM para verificar emisión textual y llamadas al runtime;
+    \item pruebas de integración usando el binario \repo{hulkc} y \repo{clang}.
+\end{itemize}
+
+La documentación interna de IR menciona golden tests para literales, datos estáticos, operaciones aritméticas, booleanas, strings, \repo{let}, shadowing, asignación, control de flujo, funciones, recursión, objetos, herencia, despacho dinámico, \repo{base}, \repo{is}, \repo{as}, vectores, generadores, \repo{for}, lambdas, capturas y closure calls.
+
+\subsection{CI}
+
+El workflow de GitHub Actions ejecuta \repo{cargo test --workspace --all-targets --locked}. Esto valida que el workspace completo compile y que las pruebas Rust pasen bajo una instalación limpia de Rust estable. La existencia de CI desde el repositorio es una fortaleza importante porque reduce el riesgo de integración tardía.
+
+\subsection{Validación y alcance de las pruebas}
+
+Durante el desarrollo dejamos configurados los mecanismos de validación del proyecto: pruebas de crates Rust, golden tests de IR, CI y objetivos de \repo{make}. La entrega también queda preparada para ejecutar \repo{make test} cuando esté disponible la carpeta \repo{tests/hulk}. Esa carpeta corresponde a la suite de evaluación y, por tanto, no forma parte del núcleo del compilador que implementamos.
+
+% ============================================================
+\section{Extensión del lenguaje}
+
+\subsection{Extensión principal defendible: protocolos estructurales}
+
+La extensión más sólida para defender académicamente es el soporte de protocolos estructurales. Aunque los protocolos aparecen en la documentación de \hulk{}, su implementación dentro del proyecto toca varias partes del compilador: tokens, gramática, AST, TypeRegistry, validación semántica, conformidad, despacho sobre receptores protocolarios y soporte de \repo{Iterable}. Por tanto, no es una adición superficial.
+
+Un protocolo declara métodos requeridos. Un tipo conforma si implementa esos métodos con una firma compatible. Esta idea introduce una dimensión estructural dentro de un lenguaje que también tiene tipado nominal por clases.
+
+\begin{lstlisting}[language=HULK,caption={Protocolo estructural}]
+protocol Named {
+    name(): String;
+}
+
+type Person(first: String, last: String) {
+    first: String = first;
+    last: String = last;
+    name(): String => self.first @@ self.last;
+}
+
+function show(x: Named): Object => print(x.name());
+
+let p = new Person("Ada", "Lovelace") in show(p);
+\end{lstlisting}
+
+\subsection{Extensión adicional implementada: arreglos y vectores}
+
+También implementamos arreglos con \repo{new T[n]}, inicialización por índice y arreglos bidimensionales como \repo{new T[][n]}. El parser reconoce estas formas en el Pratt parser y el AST las representa con \repo{Expr::NewVector}. La IR contiene operaciones dedicadas de vector. El runtime implementa \repo{HulkVector}, \repo{hulk_vector_new}, \repo{hulk_vector_push}, \repo{hulk_vector_get}, \repo{hulk_vector_set} y \repo{hulk_vector_len}.
+
+Esta extensión es visible y defendible porque modifica sintaxis, AST, tipos, lowering, backend y runtime. Sin embargo, debe probarse con cuidado, ya que la representación runtime actual usa \repo{int64_t} para elementos y requiere conversiones entre bits de \repo{double}, punteros y enteros.
+
+\subsection{Extensión adicional implementada: \repo{define}}
+
+El lexer y la gramática reconocen \repo{define}; el AST marca funciones con \repo{is_macro}; y el \repo{HirBuilder} guarda declaraciones de macro en \repo{macro_decls}. Aun así, decidimos tratar esta característica como soporte inicial: no la defendemos como un sistema completo de macros con higiene, pattern matching y expansión general como el descrito en la documentación extendida de \hulk{}.
+
+% ============================================================
+\section{Comparación con la planificación inicial}
+
+La planificación integral recomendaba un avance incremental: primero cerrar frontend, después semántica, luego IR/lowering, runtime y extensión. El estado alcanzado sigue bastante bien ese mapa, aunque con una diferencia importante: en lugar de implementar una VM propia como camino principal, el proyecto avanzó hacia LLVM IR y runtime C. Esta decisión es coherente con la orientación del proyecto, que permitía usar LLVM como backend.
+
+\begin{longtable}{p{3.6cm}p{4.8cm}p{5.8cm}}
+\toprule
+\textbf{Fase planificada} & \textbf{Estado alcanzado} & \textbf{Comentario} \\
+\midrule
+Lexer y parser & Completos para un subconjunto amplio & Se usan generadores propios y Pratt parser para expresiones complejas. \\
+AST & Amplio & Incluye declaraciones, objetos, protocolos, vectores, arreglos, lambdas y macros iniciales. \\
+Semántica & Avanzada & Incluye inferencia iterativa y validación de protocolos. \\
+IR y lowering & Avanzados & La IR cubre más de lo que el backend puede ejecutar completamente. \\
+Runtime/ejecución & Parcial funcional & Se eligió LLVM + runtime C, no VM propia. \\
+Extensión & Varias extensiones visibles & Protocolos, arreglos/vectores, lambdas/functors y soporte inicial de \repo{define}. \\
+Reporte & Este documento & Resume y defiende el diseño implementado por el equipo. \\
+\bottomrule
+\end{longtable}
+
+% ============================================================
+\section{Limitaciones actuales}
+
+\subsection{Backend y runtime todavía minimalistas}
+
+Aunque el backend LLVM declara y emite muchas operaciones, el runtime sigue siendo deliberadamente pequeño. No hay recolector de basura, no hay gestión robusta de memoria, no hay checks completos de bounds para vectores y la representación de valores en vectores usa \repo{int64_t}, lo que puede requerir disciplina estricta al mezclar números, punteros y booleanos.
+
+\subsection{README vacío}
+
+El \repo{README.md} quedó pendiente. Esto no afecta la arquitectura del compilador, pero sí afecta la experiencia de evaluación. Para una entrega final, debemos incluir instalación, comandos, ejemplos, flags, requisitos de \repo{clang}, cómo ejecutar pruebas y qué subconjunto está soportado.
+
+\subsection{Diferencia entre soporte en IR y soporte ejecutable}
+
+La IR ya modela características avanzadas, pero no todas ellas deben asumirse como completamente ejecutables en todos los casos. Este informe recomienda demostrar la entrega con programas que usen el subconjunto efectivamente soportado por LLVM y runtime, y usar dumps de IR para mostrar características que aún estén en transición.
+
+\subsection{Macros no deben sobredimensionarse}
+
+El parser y el AST reconocen \repo{define}, pero no se debe presentar como una implementación completa de macros higiénicas con pattern matching. El informe lo registra como soporte inicial o extensión en progreso.
+
+\subsection{Pruebas de evaluación}
+
+El repositorio tiene CI y Makefile. Para la defensa del proyecto, apoyamos la validación en comandos reproducibles, ejemplos concretos y ejecución de la suite disponible. La suite externa completa se ejecuta cuando se proporciona la carpeta \repo{tests/hulk}.
+
+% ============================================================
+\section{Instrucciones de uso recomendadas}
+
+\subsection{Compilación del proyecto}
+
+\begin{lstlisting}[language=IR,caption={Construcción del compilador}]
+cargo build --release -p hulk-driver
+cp target/release/hulkc ./hulk
+\end{lstlisting}
+
+También puede usarse:
+
+\begin{lstlisting}[language=IR,caption={Construcción mediante Makefile}]
+make build
+\end{lstlisting}
+
+\subsection{Compilación de un programa \hulk}
+
+\begin{lstlisting}[language=IR,caption={Compilación de un programa fuente}]
+./hulk examples/programa.hulk
+./output
+\end{lstlisting}
+
+El driver genera temporalmente \repo{output.ll}, lo pasa a \repo{clang} junto con \repo{runtime/}\repo{hulk_runtime.c}, enlaza con \repo{-lm} y produce \repo{./output}.
+
+\subsection{Depuración por fases}
+
+\begin{lstlisting}[language=IR,caption={Dumps útiles para depuración}]
+./hulk programa.hulk --ast
+./hulk programa.hulk --check
+./hulk programa.hulk --hir
+./hulk programa.hulk --ir
+./hulk programa.hulk --emit-llvm
+\end{lstlisting}
+
+Estos comandos son valiosos para defender el compilador, porque muestran que no es una caja negra: cada representación intermedia puede inspeccionarse.
+
+% ============================================================
+\section{Conclusiones}
+
+El compilador desarrollado presenta una arquitectura sólida para un proyecto académico de compilación. La separación en crates, el uso de generadores propios, el parser Pratt para expresiones, la HIR tipada, la IR propia y el backend LLVM muestran una comprensión clara de las fases de un compilador moderno.
+
+Como resultado del trabajo realizado, el compilador alcanzó un estado significativamente más completo que el prototipo inicial. El driver compila hasta binario con \repo{clang}; la semántica incluye inferencia iterativa de firmas; la IR agrega detalles para closures; el backend LLVM incorpora soporte de vectores, rangos, closures y despacho protocolario; y el runtime C contiene estructuras para \repo{HulkVector}, \repo{HulkRange} y \repo{HulkClosure}.
+
+Aun así, el proyecto debe defenderse con honestidad técnica. El frontend, la semántica y la IR están más maduros que el runtime final. No hay garbage collector, el README está pendiente, las macros no están completas como sistema general, y algunas extensiones avanzadas requieren pruebas de integración cuidadosas. Estas limitaciones no invalidan el proyecto; al contrario, muestran una arquitectura incremental en la que las fronteras de completitud están identificadas.
+
+En síntesis, la entrega representa un compilador de \hulk{} modular, extensible y parcialmente ejecutable, con una base fuerte para continuar hacia una implementación más completa. El mayor valor técnico está en la claridad del pipeline y en los contratos internos entre AST, HIR, IR, LLVM y runtime.
+
+% ============================================================
+\appendix
+\section{Checklist final de entrega}
+
+\begin{longtable}{p{8cm}p{4cm}p{3cm}}
+\toprule
+\textbf{Elemento} & \textbf{Estado recomendado} & \textbf{Prioridad} \\
+\midrule
+Completar README con comandos de uso y ejemplos & Pendiente & Alta \\
+Confirmar \repo{cargo test --workspace --all-targets --locked} & Recomendado & Alta \\
+Preparar ejemplos que compilen hasta \repo{./output} & Recomendado & Alta \\
+Preparar ejemplos que muestren AST, HIR, IR y LLVM & Recomendado & Alta \\
+Documentar subconjunto ejecutable real & Necesario & Alta \\
+No presentar macros como completas si no se demuestran & Necesario & Media \\
+Añadir pruebas end-to-end para vectores y rangos & Recomendado & Media \\
+Añadir checks de bounds en runtime de vectores & Futuro & Media \\
+Diseñar estrategia de memoria o garbage collector & Futuro & Baja \\
+\bottomrule
+\end{longtable}
+
+\section{Ejemplo de programa demostrativo}
+
+\begin{lstlisting}[language=HULK,caption={Programa sugerido para demostración básica}]
+function square(x: Number): Number => x * x;
+
+type Point(x: Number, y: Number) {
+    x: Number = x;
+    y: Number = y;
+
+    norm2(): Number => square(self.x) + square(self.y);
+}
+
+let p = new Point(3, 4) in {
+    print("norm2:");
+    print(p.norm2());
+};
+\end{lstlisting}
+
+Este ejemplo recorre varias fases sin depender de las partes más frágiles: funciones globales, tipos, atributos, métodos, \repo{self}, llamadas, strings y números.
+
+\end{document}

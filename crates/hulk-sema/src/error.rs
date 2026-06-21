@@ -1,5 +1,5 @@
 use crate::types::Type;
-use hulk_frontend::ast::{BinaryOp, UnaryOp};
+use hulk_frontend::ast::{BinaryOp, Span, UnaryOp};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -31,16 +31,17 @@ pub enum SemanticError {
         method_name: String,
     },
 
-    #[error("Undefined variable '{name}'")]
-    UndefinedVariable { name: String },
+    #[error("Undefined variable '{name}'{}", span_suffix(.span))]
+    UndefinedVariable { name: String, span: Span },
 
-    #[error("Undefined function '{name}'")]
-    UndefinedFunction { name: String },
+    #[error("Undefined function '{name}'{}", span_suffix(.span))]
+    UndefinedFunction { name: String, span: Span },
 
-    #[error("Undefined method '{method_name}' for type '{type_name}'")]
+    #[error("Undefined method '{method_name}' for type '{type_name}'{}", span_suffix(.span))]
     UndefinedMethod {
         type_name: String,
         method_name: String,
+        span: Span,
     },
 
     #[error("Invalid assignment target")]
@@ -168,4 +169,17 @@ pub enum SemanticError {
         expected: Type,
         found: Type,
     },
+
+    #[error("Non-exhaustive match: missing a wildcard or binding arm for scrutinee of type '{scrutinee_type}'")]
+    NonExhaustiveMatch {
+        scrutinee_type: String,
+    },
+}
+
+fn span_suffix(span: &Span) -> String {
+    if span.line > 0 {
+        format!(" at line {}:{}", span.line, span.col)
+    } else {
+        String::new()
+    }
 }
