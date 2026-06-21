@@ -255,6 +255,12 @@ pub enum Expr {
         return_type: Option<TypeRef>,
         body: Box<Expr>,
     },
+
+    Match {
+        span: Span,
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +282,37 @@ pub enum UnaryOp {
     Neg,
     Pos,
 }
+
+// ---------------------------------------------------------------------------
+// Pattern matching
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiteralPattern {
+    Number(f64),
+    String(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Wildcard,
+    TypePattern {
+        type_name: String,
+        bind: Option<String>,
+    },
+    Literal(LiteralPattern),
+    Binding(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinaryOp {
